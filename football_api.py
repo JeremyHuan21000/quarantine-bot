@@ -9,6 +9,7 @@ match result (home/draw/away), total goals (over/under), and BTTS.
 Docs: https://www.football-data.org/documentation/quickstart
 """
 import os
+import time
 import datetime
 import requests
 
@@ -25,16 +26,40 @@ HEADERS = {"X-Auth-Token": API_KEY} if API_KEY else {}
 
 
 def get_todays_fixtures():
-    """Return today's scheduled matches across the free competitions."""
+    """
+    Return today's upcoming (not yet finished) matches across the free
+    competitions.
+
+    NOTE: the combined /v4/matches endpoint reliably returns an empty
+    result on the free tier even when matches genuinely exist for the
+    given date/competitions (confirmed via manual testing) - so instead
+    we query each competition individually via /v4/competitions/{code}/matches,
+    which does return real data, and filter by date ourselves in Python.
+    A short delay between calls keeps us under the free tier's 10
+    requests/minute limit.
+    """
     today = datetime.date.today().isoformat()
-    url = f"{BASE_URL}/matches"
-    params = {"dateFrom": today, "dateTo": today, "status": "SCHEDULED"}
-    resp = requests.get(url, headers=HEADERS, params=params, timeout=10)
-    resp.raise_for_status()
-    data = resp.json()
-    matches = data.get("matches", [])
-    # Free tier returns all competitions the key has access to; filter defensively
-    return [m for m in matches if m.get("competition", {}).get("code") in FREE_COMPETITIONS]
+    all_matches = []
+
+    for code in FREE_COMPETITIONS:
+        url = f"{BASE_URL}/competitions/{code}/matches"
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=10)
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            print(f"Failed to fetch {code} matches: {e}")
+            time.sleep(6)
+            continue
+
+        data = resp.json()
+        for m in data.get("matches", []):
+            if m.get("utcDate", "").startswith(today):
+                all_matches.append(m)
+
+        time.sleep(6)  # stay comfortably under 10 requests/minute
+
+    upcoming_statuses = {"SCHEDULED", "TIMED"}
+    return [m for m in all_matches if m.get("status") in upcoming_statuses]
 
 
 def get_match(match_id: int):

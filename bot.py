@@ -1,6 +1,7 @@
 import os
 import json
 import sqlite3
+import asyncio
 import datetime
 import discord
 from discord import app_commands
@@ -299,7 +300,7 @@ async def daily_question_task():
         return  # don't overwrite an unresolved question
 
     try:
-        fixtures = football_api.get_todays_fixtures()
+        fixtures = await asyncio.to_thread(football_api.get_todays_fixtures)
     except Exception as e:
         print(f"Failed to fetch fixtures: {e}")
         return
@@ -382,8 +383,21 @@ async def question(interaction: discord.Interaction, question: str, option_a: st
     await interaction.response.send_message(embed=embed, view=view)
 
 
+async def resolve_option_autocomplete(interaction: discord.Interaction, current: str):
+    q = get_question()
+    if not q or not q["active"]:
+        return []
+    options = q["options"]
+    return [
+        app_commands.Choice(name=opt, value=opt)
+        for opt in options
+        if current.lower() in opt.lower()
+    ][:25]
+
+
 @bot.tree.command(description="Manually resolve today's question and update streaks")
-@app_commands.describe(correct_option="The correct answer, exactly as typed in /question")
+@app_commands.describe(correct_option="Pick the correct answer from the list (matches the current question's buttons)")
+@app_commands.autocomplete(correct_option=resolve_option_autocomplete)
 async def resolve(interaction: discord.Interaction, correct_option: str):
     if not is_mod(interaction):
         await interaction.response.send_message("Mods only.", ephemeral=True)
@@ -392,6 +406,15 @@ async def resolve(interaction: discord.Interaction, correct_option: str):
     q = get_question()
     if not q or not q["active"]:
         await interaction.response.send_message("No active question to resolve.", ephemeral=True)
+        return
+
+    if correct_option not in q["options"]:
+        options_list = ", ".join(q["options"])
+        await interaction.response.send_message(
+            f"'{correct_option}' doesn't match any option for the current question. "
+            f"Valid options are: {options_list}",
+            ephemeral=True,
+        )
         return
 
     await interaction.response.send_message("Resolving...", ephemeral=True)
