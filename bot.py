@@ -193,6 +193,9 @@ class PickView(discord.ui.View):
             self.add_item(PickButton(opt, style))
 
 
+LOCK_GRACE_MINUTES = 5  # allow a short grace window after kickoff before locking
+
+
 class PickButton(discord.ui.Button):
     def __init__(self, label: str, style: discord.ButtonStyle):
         super().__init__(label=label, style=style, custom_id=f"pick_{label}")
@@ -211,6 +214,17 @@ class PickButton(discord.ui.Button):
                 "No active question right now.", ephemeral=True
             )
             return
+
+        kickoff_str = q["extra"].get("kickoff_utc")
+        if kickoff_str:
+            kickoff = datetime.datetime.fromisoformat(kickoff_str.replace("Z", "+00:00"))
+            lock_time = kickoff + datetime.timedelta(minutes=LOCK_GRACE_MINUTES)
+            now = datetime.datetime.now(datetime.timezone.utc)
+            if now >= lock_time:
+                await interaction.response.send_message(
+                    "Picks are locked - kickoff has passed.", ephemeral=True
+                )
+                return
 
         record_pick(member.id, self.label)
         await interaction.response.send_message(
@@ -265,13 +279,18 @@ async def grade_and_announce(guild: discord.Guild, correct_option: str, title: s
             )
 
 
-async def post_question_embed(channel, question_text, options, auto=True):
+async def post_question_embed(channel, question_text, options, kickoff_utc=None):
     embed = discord.Embed(
         title="Today's Quarantine Prediction",
         description=question_text,
         color=discord.Color.red(),
     )
-    embed.set_footer(text=f"Get to {STREAK_TARGET} in a row to earn release.")
+    footer = f"Get to {STREAK_TARGET} in a row to earn release."
+    if kickoff_utc:
+        kickoff = datetime.datetime.fromisoformat(kickoff_utc.replace("Z", "+00:00"))
+        lock_time = kickoff + datetime.timedelta(minutes=LOCK_GRACE_MINUTES)
+        footer += f" Picks lock at {lock_time.strftime('%H:%M UTC')}."
+    embed.set_footer(text=footer)
     view = PickView(options)
     await channel.send(embed=embed, view=view)
 
@@ -313,8 +332,9 @@ async def daily_question_task():
     import random
     match = random.choice(fixtures)
     qtype, text, options, extra = question_gen.generate_question(match)
+    extra["kickoff_utc"] = match["utcDate"]
     set_question(text, options, match_id=match["id"], qtype=qtype, extra=extra, auto=True)
-    await post_question_embed(channel, text, options)
+    await post_question_embed(channel, text, options, kickoff_utc=match["utcDate"])
     _last_auto_post_date = today
 
 
