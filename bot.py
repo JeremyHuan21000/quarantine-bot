@@ -347,10 +347,25 @@ async def auto_resolve_task():
 
 
 # ---------- Slash commands ----------
+_views_registered = False
+
+
 @bot.event
 async def on_ready():
+    global _views_registered
     init_db()
     await bot.tree.sync()
+
+    if not _views_registered:
+        q = get_question()
+        if q and q["active"]:
+            # Re-attach a live view to the current question so buttons on
+            # the existing Discord message keep working after a restart -
+            # without this, old button clicks silently fail/time out since
+            # discord.py has no in-memory handler for them anymore.
+            bot.add_view(PickView(q["options"]))
+        _views_registered = True
+
     if not daily_question_task.is_running():
         daily_question_task.start()
     if not auto_resolve_task.is_running():
