@@ -343,16 +343,19 @@ async def auto_resolve_task():
     """Check if the active auto-generated question's match has finished, and grade it."""
     q = get_question()
     if not q or not q["active"] or not q["auto"] or not q["match_id"]:
+        print(f"[auto_resolve] skipping: no active auto question (q={q})")
         return
 
     try:
-        match = football_api.get_match(q["match_id"])
+        match = await asyncio.to_thread(football_api.get_match, q["match_id"])
     except Exception as e:
-        print(f"Failed to fetch match {q['match_id']}: {e}")
+        print(f"[auto_resolve] Failed to fetch match {q['match_id']}: {e}")
         return
 
     result = football_api.extract_result(match)
+    print(f"[auto_resolve] match {q['match_id']} result: {result}")
     if not result["finished"] or result["home_goals"] is None:
+        print(f"[auto_resolve] not finished yet, skipping")
         return
 
     correct_option = question_gen.resolve_answer(
@@ -361,9 +364,12 @@ async def auto_resolve_task():
     )
 
     guild = bot.get_guild(GUILD_ID)
+    print(f"[auto_resolve] guild lookup for {GUILD_ID}: {guild}")
     if guild:
         title = f"Results: {correct_option} ({result['home_name']} {result['home_goals']}-{result['away_goals']} {result['away_name']})"
         await grade_and_announce(guild, correct_option, title)
+    else:
+        print(f"[auto_resolve] ERROR: could not find guild {GUILD_ID}, cached guilds: {[g.id for g in bot.guilds]}")
 
 
 # ---------- Slash commands ----------
