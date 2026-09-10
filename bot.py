@@ -3,15 +3,16 @@ import json
 import sqlite3
 import asyncio
 import datetime
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-from dotenv import load_dotenv
 
 import football_api
 import question_gen
-
-load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", "0"))

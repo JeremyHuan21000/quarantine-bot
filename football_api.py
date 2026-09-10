@@ -12,8 +12,17 @@ import os
 import time
 import datetime
 import requests
+from dotenv import load_dotenv
+
+# Defensive: ensure .env is loaded even if this module gets imported before
+# the caller loads it themselves - avoids a repeat of a nasty bug where
+# API_KEY silently became None because it was read at import time, before
+# load_dotenv() had run in bot.py.
+load_dotenv()
 
 API_KEY = os.getenv("FOOTBALL_DATA_API_KEY")
+if not API_KEY:
+    print("[football_api] WARNING: FOOTBALL_DATA_API_KEY is not set - all requests will fail with 403.")
 BASE_URL = "https://api.football-data.org/v4"
 
 # The 12 competitions available on the free tier (codes per football-data.org docs)
