@@ -25,6 +25,26 @@ FREE_COMPETITIONS = [
 HEADERS = {"X-Auth-Token": API_KEY} if API_KEY else {}
 
 
+def _get_with_retry(url, max_retries=3, backoff_seconds=15, **kwargs):
+    """
+    GET with retry/backoff specifically for rate-limit responses (403/429).
+    The free tier allows 10 requests/minute - a burst of calls (e.g. from
+    manual testing plus the bot's own tasks firing close together) can
+    trip this temporarily, so a short wait-and-retry recovers cleanly
+    instead of failing the whole check.
+    """
+    for attempt in range(max_retries):
+        resp = requests.get(url, headers=HEADERS, timeout=10, **kwargs)
+        if resp.status_code in (403, 429) and attempt < max_retries - 1:
+            print(f"Rate-limited ({resp.status_code}) on {url}, retrying in {backoff_seconds}s...")
+            time.sleep(backoff_seconds)
+            continue
+        resp.raise_for_status()
+        return resp
+    resp.raise_for_status()
+    return resp
+
+
 def get_todays_fixtures():
     """
     Return today's upcoming (not yet finished) matches across the free
@@ -44,8 +64,7 @@ def get_todays_fixtures():
     for code in FREE_COMPETITIONS:
         url = f"{BASE_URL}/competitions/{code}/matches"
         try:
-            resp = requests.get(url, headers=HEADERS, timeout=10)
-            resp.raise_for_status()
+            resp = _get_with_retry(url)
         except requests.RequestException as e:
             print(f"Failed to fetch {code} matches: {e}")
             time.sleep(6)
@@ -65,8 +84,7 @@ def get_todays_fixtures():
 def get_match(match_id: int):
     """Return current data for a single match (used to check if it's finished)."""
     url = f"{BASE_URL}/matches/{match_id}"
-    resp = requests.get(url, headers=HEADERS, timeout=10)
-    resp.raise_for_status()
+    resp = _get_with_retry(url)
     return resp.json()
 
 
