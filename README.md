@@ -29,7 +29,7 @@ total goals (over/under), and BTTS — all derivable from the final score.
 2. **Get IDs** (enable Developer Mode in Discord: Settings -> Advanced):
    - Right-click your server -> Copy Server ID -> `GUILD_ID`
    - Right-click the quarantine role in Server Settings -> Roles -> Copy ID -> `QUARANTINE_ROLE_ID`
-   - Right-click your mod role -> Copy ID -> `MOD_ROLE_ID`
+   - Right-click each mod role -> Copy ID -> combine them comma-separated into `MOD_ROLE_IDS` (e.g. `MOD_ROLE_IDS=123456,789012`) if your server has more than one mod role
    - Right-click the channel where release announcements should post -> Copy ID -> `ANNOUNCE_CHANNEL_ID`
 
 3. **Get a free football-data.org key**: register at
