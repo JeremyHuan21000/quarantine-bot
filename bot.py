@@ -214,11 +214,7 @@ class PickButton(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
         member = interaction.user
-        if not is_quarantined(member):
-            await interaction.response.send_message(
-                "Only quarantined members can pick.", ephemeral=True
-            )
-            return
+        playing_for_release = is_quarantined(member)
 
         q = get_question()
         if not q or not q["active"]:
@@ -242,23 +238,37 @@ class PickButton(discord.ui.Button):
                 return
 
         record_pick(member.id, self.label)
-        await interaction.response.send_message(
-            f"Locked in: **{self.label}**. Good luck.", ephemeral=True
-        )
+        if playing_for_release:
+            msg = f"Locked in: **{self.label}**. Good luck."
+        else:
+            msg = f"Locked in: **{self.label}**. (Just for fun - you're not in quarantine, so this doesn't count toward a streak.)"
+        await interaction.response.send_message(msg, ephemeral=True)
 
 
 async def grade_and_announce(guild: discord.Guild, correct_option: str, title: str):
     """Shared grading logic used by both manual /resolve and the auto-resolve loop."""
     role = guild.get_role(QUARANTINE_ROLE_ID)
-    quarantined_members = [m for m in guild.members if role in m.roles]
+    quarantined_ids = {m.id for m in guild.members if role in m.roles}
     picks = dict(get_all_picks())
+
+    # Everyone who currently has a streak or made a pick this round gets
+    # graded - not just quarantined members - so non-quarantined players
+    # can build their own streak for fun. Only quarantined members are
+    # ever checked for release below.
+    participant_ids = set(picks.keys()) | {
+        uid for uid in quarantined_ids
+    }
 
     released = []
     results_lines = []
 
-    for member in quarantined_members:
-        user_pick = picks.get(member.id)
-        current = get_streak(member.id)
+    for user_id in participant_ids:
+        member = guild.get_member(user_id)
+        if member is None:
+            continue  # left the server, or otherwise unresolvable
+
+        user_pick = picks.get(user_id)
+        current = get_streak(user_id)
 
         if user_pick and user_pick.strip().lower() == correct_option.strip().lower():
             new_streak = current + 1
@@ -268,12 +278,12 @@ async def grade_and_announce(guild: discord.Guild, correct_option: str, title: s
             reason = "missed" if not user_pick else "wrong"
             results_lines.append(f"❌ {member.display_name}: reset ({reason})")
 
-        set_streak(member.id, new_streak)
+        set_streak(user_id, new_streak)
 
-        if new_streak >= STREAK_TARGET:
+        if user_id in quarantined_ids and new_streak >= STREAK_TARGET:
             try:
                 await member.remove_roles(role)
-                set_streak(member.id, 0)
+                set_streak(user_id, 0)
                 released.append(member)
             except discord.Forbidden:
                 pass
@@ -492,20 +502,21 @@ async def leaderboard(interaction: discord.Interaction):
     role = guild.get_role(QUARANTINE_ROLE_ID)
     quarantined_ids = {m.id for m in guild.members if role in m.roles}
 
-    rows = [r for r in get_leaderboard() if r[0] in quarantined_ids]
+    rows = [r for r in get_leaderboard() if r[1] > 0 or r[0] in quarantined_ids]
 
     if not rows:
-        await interaction.response.send_message("Nobody's in quarantine right now.")
+        await interaction.response.send_message("Nobody's picked yet.")
         return
 
     lines = []
     for i, (user_id, s) in enumerate(rows, start=1):
         member = guild.get_member(user_id)
         name = member.display_name if member else f"User {user_id}"
-        lines.append(f"{i}. {name} — {s}/{STREAK_TARGET}")
+        tag = "" if user_id in quarantined_ids else " (not quarantined)"
+        lines.append(f"{i}. {name}{tag} — {s}/{STREAK_TARGET}")
 
     embed = discord.Embed(
-        title="Quarantine Streak Leaderboard",
+        title="Streak Leaderboard",
         description="\n".join(lines),
         color=discord.Color.orange(),
     )
