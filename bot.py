@@ -20,7 +20,9 @@ QUARANTINE_ROLE_ID = int(os.getenv("QUARANTINE_ROLE_ID", "0"))
 QUESTION_CHANNEL_ID = int(os.getenv("QUESTION_CHANNEL_ID", "0"))
 ANNOUNCE_CHANNEL_ID = int(os.getenv("ANNOUNCE_CHANNEL_ID", "0"))
 STREAK_TARGET = int(os.getenv("STREAK_TARGET", "7"))
-MOD_ROLE_ID = int(os.getenv("MOD_ROLE_ID", "0"))
+MOD_ROLE_IDS = {
+    int(r.strip()) for r in os.getenv("MOD_ROLE_IDS", "").split(",") if r.strip()
+}
 DAILY_POST_HOUR_UTC = int(os.getenv("DAILY_POST_HOUR_UTC", "10"))
 
 DB_PATH = "quarantine.db"
@@ -157,6 +159,15 @@ def get_all_picks():
     return rows
 
 
+def get_user_pick(user_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT choice FROM picks WHERE user_id = ?", (user_id,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
 def get_leaderboard():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -169,8 +180,8 @@ def get_leaderboard():
 def is_mod(interaction: discord.Interaction) -> bool:
     if interaction.user.guild_permissions.administrator:
         return True
-    if MOD_ROLE_ID:
-        return any(r.id == MOD_ROLE_ID for r in interaction.user.roles)
+    if MOD_ROLE_IDS:
+        return any(r.id in MOD_ROLE_IDS for r in interaction.user.roles)
     return False
 
 
@@ -222,9 +233,12 @@ class PickButton(discord.ui.Button):
             lock_time = kickoff + datetime.timedelta(minutes=LOCK_GRACE_MINUTES)
             now = datetime.datetime.now(datetime.timezone.utc)
             if now >= lock_time:
-                await interaction.response.send_message(
-                    "Picks are locked - kickoff has passed.", ephemeral=True
-                )
+                existing_pick = get_user_pick(member.id)
+                if existing_pick:
+                    msg = f"Picks are locked - kickoff has passed. Your locked-in pick: **{existing_pick}**"
+                else:
+                    msg = "Picks are locked - kickoff has passed. You didn't lock in a pick, so this one counts as missed."
+                await interaction.response.send_message(msg, ephemeral=True)
                 return
 
         record_pick(member.id, self.label)
