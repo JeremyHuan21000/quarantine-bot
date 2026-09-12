@@ -269,18 +269,27 @@ async def grade_and_announce(guild: discord.Guild, correct_option: str, title: s
 
         user_pick = picks.get(user_id)
         current = get_streak(user_id)
+        is_quarantined_now = user_id in quarantined_ids
+
+        # Only worth showing if they actually did something this round
+        # (picked) or had a real streak on the line that's now being reset -
+        # a permanently-inactive quarantined member sitting at 0 shouldn't
+        # clutter the results every single day.
+        show_line = user_pick is not None or (is_quarantined_now and current > 0)
 
         if user_pick and user_pick.strip().lower() == correct_option.strip().lower():
             new_streak = current + 1
-            results_lines.append(f"✅ {member.display_name}: {new_streak}/{STREAK_TARGET}")
+            if show_line:
+                results_lines.append(f"✅ {member.display_name}: {new_streak}/{STREAK_TARGET}")
         else:
             new_streak = 0
-            reason = "missed" if not user_pick else "wrong"
-            results_lines.append(f"❌ {member.display_name}: reset ({reason})")
+            if show_line:
+                reason = "missed" if not user_pick else "wrong"
+                results_lines.append(f"❌ {member.display_name}: reset ({reason})")
 
         set_streak(user_id, new_streak)
 
-        if user_id in quarantined_ids and new_streak >= STREAK_TARGET:
+        if is_quarantined_now and new_streak >= STREAK_TARGET:
             try:
                 await member.remove_roles(role)
                 set_streak(user_id, 0)
