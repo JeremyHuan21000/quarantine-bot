@@ -122,6 +122,11 @@ external database needed.
   anyone who hits the target, and posts an announcement.
 - `/streak [@user]` — anyone can check their own or someone else's streak.
 - `/leaderboard` — shows all currently quarantined members ranked by streak.
+- `/blacklist add <@user>` — **mods only**. Prevents the bot from automatically
+  removing that user's quarantine role. Their picks and streak are still tracked.
+- `/blacklist remove <@user>` — **mods only**. Makes a blacklisted user eligible
+  for automatic release again.
+- `/blacklist list` — **mods only**. Shows the current release blacklist.
 
 ## How a day works (automated)
 
@@ -137,7 +142,8 @@ external database needed.
    it has, it grades every pick automatically from the final score,
    updates streaks, and posts the results.
 4. Anyone reaching the streak target (default 7) has the quarantine role
-   removed automatically and gets a public shoutout.
+   removed automatically and gets a public shoutout, unless a moderator has
+   placed them on the release blacklist.
 
 Mods can skip all of this on a given day with `/question` + `/resolve`.
 
@@ -147,6 +153,10 @@ Mods can skip all of this on a given day with `/question` + `/resolve`.
   overwrites the current one and clears picks; the auto-post won't
   overwrite an unresolved question, it'll just wait.
 - `STREAK_TARGET` in `.env` controls the streak needed to be released.
+- The release blacklist is stored in `quarantine.db`, so it survives bot and
+  server restarts. Removing someone from it does not immediately release them;
+  they become eligible the next time a question is resolved while their streak
+  is at or above the target.
 - Question difficulty is weighted in `question_gen.py`
   (`WEIGHTED_TYPES` and `OVER_UNDER_LINES`) — adjust the weights or the
   over/under lines there if picks feel too easy or too hard.

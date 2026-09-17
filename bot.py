@@ -61,6 +61,11 @@ def init_db():
             PRIMARY KEY (user_id)
         )
     """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS release_blacklist (
+            user_id INTEGER PRIMARY KEY
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -177,6 +182,43 @@ def get_leaderboard():
     return rows
 
 
+def is_blacklisted(user_id: int) -> bool:
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT 1 FROM release_blacklist WHERE user_id = ?", (user_id,))
+    row = c.fetchone()
+    conn.close()
+    return row is not None
+
+
+def add_to_blacklist(user_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "INSERT OR IGNORE INTO release_blacklist (user_id) VALUES (?)",
+        (user_id,),
+    )
+    conn.commit()
+    conn.close()
+
+
+def remove_from_blacklist(user_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM release_blacklist WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_blacklist():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM release_blacklist ORDER BY user_id")
+    rows = c.fetchall()
+    conn.close()
+    return [row[0] for row in rows]
+
+
 def is_mod(interaction: discord.Interaction) -> bool:
     if interaction.user.guild_permissions.administrator:
         return True
@@ -289,7 +331,11 @@ async def grade_and_announce(guild: discord.Guild, correct_option: str, title: s
 
         set_streak(user_id, new_streak)
 
-        if is_quarantined_now and new_streak >= STREAK_TARGET:
+        if (
+            is_quarantined_now
+            and new_streak >= STREAK_TARGET
+            and not is_blacklisted(user_id)
+        ):
             try:
                 await member.remove_roles(role)
                 set_streak(user_id, 0)
@@ -503,6 +549,83 @@ async def streak(interaction: discord.Interaction, user: discord.Member = None):
     await interaction.response.send_message(
         f"{target.display_name}'s streak: **{s}/{STREAK_TARGET}**"
     )
+
+
+blacklist_group = app_commands.Group(
+    name="blacklist",
+    description="Manage users who cannot earn automatic quarantine release",
+)
+
+
+@blacklist_group.command(name="add", description="Block a user from automatic quarantine release")
+@app_commands.describe(user="User to block from automatic release")
+async def blacklist_add(interaction: discord.Interaction, user: discord.Member):
+    if not is_mod(interaction):
+        await interaction.response.send_message("Mods only.", ephemeral=True)
+        return
+
+    if is_blacklisted(user.id):
+        await interaction.response.send_message(
+            f"{user.mention} is already on the release blacklist.",
+            ephemeral=True,
+        )
+        return
+
+    add_to_blacklist(user.id)
+    await interaction.response.send_message(
+        f"Added {user.mention} to the release blacklist. Their streak will still be tracked, "
+        "but the bot will not remove their quarantine role.",
+        ephemeral=True,
+    )
+
+
+@blacklist_group.command(name="remove", description="Allow a user to earn automatic quarantine release again")
+@app_commands.describe(user="User to remove from the release blacklist")
+async def blacklist_remove(interaction: discord.Interaction, user: discord.Member):
+    if not is_mod(interaction):
+        await interaction.response.send_message("Mods only.", ephemeral=True)
+        return
+
+    if not is_blacklisted(user.id):
+        await interaction.response.send_message(
+            f"{user.mention} is not on the release blacklist.",
+            ephemeral=True,
+        )
+        return
+
+    remove_from_blacklist(user.id)
+    await interaction.response.send_message(
+        f"Removed {user.mention} from the release blacklist. They can now earn automatic release.",
+        ephemeral=True,
+    )
+
+
+@blacklist_group.command(name="list", description="Show everyone blocked from automatic quarantine release")
+async def blacklist_list(interaction: discord.Interaction):
+    if not is_mod(interaction):
+        await interaction.response.send_message("Mods only.", ephemeral=True)
+        return
+
+    user_ids = get_blacklist()
+    if not user_ids:
+        await interaction.response.send_message(
+            "The release blacklist is empty.",
+            ephemeral=True,
+        )
+        return
+
+    lines = []
+    for user_id in user_ids:
+        member = interaction.guild.get_member(user_id)
+        lines.append(member.mention if member else f"User ID `{user_id}` (not in server)")
+
+    await interaction.response.send_message(
+        "**Release blacklist**\n" + "\n".join(lines),
+        ephemeral=True,
+    )
+
+
+bot.tree.add_command(blacklist_group)
 
 
 @bot.tree.command(description="Show the quarantine leaderboard")
