@@ -112,16 +112,26 @@ external database needed.
 
 ## Commands (all slash commands)
 
-- `/question <question> <option_a> <option_b> [option_c]` — **mods only**.
+- `/question <question> <option_a> <option_b> <lock_minutes> [option_c]` — **mods only**.
   Manually posts a question, overriding auto-generation for that day.
-  Example: `/question "Arsenal vs Chelsea: BTTS?" Yes No`
+  The deadline is calculated from `lock_minutes` and displayed in UTC.
+- `/lock` — **mods only**. Immediately closes submissions without resolving.
+- `/cancel [reason]` — **mods only**. Voids the active prediction without
+  changing streaks or statistics.
 - `/resolve <correct_option>` — **mods only**. Manually grade the current
   question (needed if you used `/question`, or if you want to override
   an auto-generated one). Type the answer exactly as it appears as a
   button label. Updates every quarantined member's streak, auto-releases
   anyone who hits the target, and posts an announcement.
 - `/streak [@user]` — anyone can check their own or someone else's streak.
+- `/stats [@user]` — shows regular-pick accuracy, current and best streaks,
+  and exact-score performance.
 - `/leaderboard` — shows all currently quarantined members ranked by streak.
+- `/scorequestion <home_team> <away_team> <lock_minutes>` — **mods only**.
+  Posts a private full-time exact-score challenge. Users submit both scores
+  through a modal; an exact hit earns instant release.
+- `/scoreresolve <home_goals> <away_goals>` — **mods only**. Resolves the
+  active exact-score challenge using the final full-time score.
 - `/blacklist add <@user>` — **mods only**. Prevents the bot from automatically
   removing that user's quarantine role. Their picks and streak are still tracked.
 - `/blacklist remove <@user>` — **mods only**. Makes a blacklisted user eligible
@@ -145,6 +155,9 @@ external database needed.
    removed automatically and gets a public shoutout, unless a moderator has
    placed them on the release blacklist.
 
+If an automatically tracked fixture is cancelled or postponed, the round is
+voided without changing streaks or statistics.
+
 Mods can skip all of this on a given day with `/question` + `/resolve`.
 
 ## Notes / things you may want to tweak
@@ -153,6 +166,8 @@ Mods can skip all of this on a given day with `/question` + `/resolve`.
   overwrites the current one and clears picks; the auto-post won't
   overwrite an unresolved question, it'll just wait.
 - `STREAK_TARGET` in `.env` controls the streak needed to be released.
+- `DB_PATH` selects the SQLite database. Use `quarantine-test.db` for a test
+  instance so it cannot touch live streaks or the live blacklist.
 - The release blacklist is stored in `quarantine.db`, so it survives bot and
   server restarts. Removing someone from it does not immediately release them;
   they become eligible the next time a question is resolved while their streak
@@ -168,3 +183,10 @@ Mods can skip all of this on a given day with `/question` + `/resolve`.
   football-data.org (or a different provider like API-Football) — not
   wired up here, but `question_gen.py` is where you'd add new question
   types if you upgrade later.
+
+## Running a separate test bot
+
+Use a second Discord application and a separate checkout or directory. Give
+the test copy its own `.env` values, especially a test token, test server IDs,
+and `DB_PATH=quarantine-test.db`. It can run alongside the live service on the
+same Oracle VM.

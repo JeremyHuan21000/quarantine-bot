@@ -106,7 +106,9 @@ def extract_result(match: dict):
     finished = status in ("FINISHED", "AWARDED")
     score = match.get("score", {}).get("fullTime", {})
     return {
+        "status": status,
         "finished": finished,
+        "voided": status in ("CANCELLED", "POSTPONED"),
         "home_goals": score.get("home"),
         "away_goals": score.get("away"),
         "home_name": match.get("homeTeam", {}).get("name"),

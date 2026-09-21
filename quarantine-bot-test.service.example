@@ -1,0 +1,14 @@
+[Unit]
+Description=Quarantine Prediction Bot (Test)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/quarantine-bot-test
+ExecStart=/home/ubuntu/quarantine-bot-test/venv/bin/python bot.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

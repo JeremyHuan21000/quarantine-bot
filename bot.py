@@ -24,8 +24,10 @@ MOD_ROLE_IDS = {
     int(r.strip()) for r in os.getenv("MOD_ROLE_IDS", "").split(",") if r.strip()
 }
 DAILY_POST_HOUR_UTC = int(os.getenv("DAILY_POST_HOUR_UTC", "10"))
+ENABLE_AUTOMATION = os.getenv("ENABLE_AUTOMATION", "true").lower() == "true"
+SYNC_GUILD_COMMANDS = os.getenv("SYNC_GUILD_COMMANDS", "false").lower() == "true"
 
-DB_PATH = "quarantine.db"
+DB_PATH = os.getenv("DB_PATH", "quarantine.db")
 
 intents = discord.Intents.default()
 intents.members = True
@@ -64,6 +66,27 @@ def init_db():
     c.execute("""
         CREATE TABLE IF NOT EXISTS release_blacklist (
             user_id INTEGER PRIMARY KEY
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS user_stats (
+            user_id INTEGER PRIMARY KEY,
+            total_picks INTEGER DEFAULT 0,
+            correct_picks INTEGER DEFAULT 0,
+            best_streak INTEGER DEFAULT 0,
+            exact_score_attempts INTEGER DEFAULT 0,
+            exact_score_hits INTEGER DEFAULT 0
+        )
+    """)
+    c.execute("""
+        INSERT OR IGNORE INTO user_stats (user_id, best_streak)
+        SELECT user_id, streak FROM streaks
+    """)
+    c.execute("""
+        UPDATE user_stats
+        SET best_streak = MAX(
+            best_streak,
+            COALESCE((SELECT streak FROM streaks WHERE streaks.user_id = user_stats.user_id), 0)
         )
     """)
     conn.commit()
@@ -139,6 +162,17 @@ def close_question():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("UPDATE current_question SET active = 0 WHERE id = 1")
+    conn.commit()
+    conn.close()
+
+
+def update_question_extra(extra: dict):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "UPDATE current_question SET extra = ? WHERE id = 1",
+        (json.dumps(extra),),
+    )
     conn.commit()
     conn.close()
 
@@ -219,6 +253,79 @@ def get_blacklist():
     return [row[0] for row in rows]
 
 
+def update_stats(
+    user_id: int,
+    *,
+    picked: bool = False,
+    correct: bool = False,
+    streak: int = 0,
+    exact_attempt: bool = False,
+    exact_hit: bool = False,
+):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "INSERT OR IGNORE INTO user_stats (user_id) VALUES (?)",
+        (user_id,),
+    )
+    c.execute(
+        """
+        UPDATE user_stats
+        SET total_picks = total_picks + ?,
+            correct_picks = correct_picks + ?,
+            best_streak = MAX(best_streak, ?),
+            exact_score_attempts = exact_score_attempts + ?,
+            exact_score_hits = exact_score_hits + ?
+        WHERE user_id = ?
+        """,
+        (
+            int(picked),
+            int(correct),
+            streak,
+            int(exact_attempt),
+            int(exact_hit),
+            user_id,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_stats(user_id: int) -> dict:
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT total_picks, correct_picks, best_streak,
+               exact_score_attempts, exact_score_hits
+        FROM user_stats WHERE user_id = ?
+        """,
+        (user_id,),
+    )
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return {
+            "total_picks": 0,
+            "correct_picks": 0,
+            "best_streak": 0,
+            "exact_score_attempts": 0,
+            "exact_score_hits": 0,
+        }
+    return dict(
+        zip(
+            (
+                "total_picks",
+                "correct_picks",
+                "best_streak",
+                "exact_score_attempts",
+                "exact_score_hits",
+            ),
+            row,
+        )
+    )
+
+
 def is_mod(interaction: discord.Interaction) -> bool:
     if interaction.user.guild_permissions.administrator:
         return True
@@ -229,6 +336,27 @@ def is_mod(interaction: discord.Interaction) -> bool:
 
 def is_quarantined(member: discord.Member) -> bool:
     return any(r.id == QUARANTINE_ROLE_ID for r in member.roles)
+
+
+def parse_utc(value: str) -> datetime.datetime:
+    return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def question_lock_time(q: dict):
+    lock_utc = q["extra"].get("lock_utc")
+    if lock_utc:
+        return parse_utc(lock_utc)
+    kickoff_utc = q["extra"].get("kickoff_utc")
+    if kickoff_utc:
+        return parse_utc(kickoff_utc) + datetime.timedelta(minutes=LOCK_GRACE_MINUTES)
+    return None
+
+
+def question_is_locked(q: dict) -> bool:
+    if q["extra"].get("locked"):
+        return True
+    lock_time = question_lock_time(q)
+    return bool(lock_time and datetime.datetime.now(datetime.timezone.utc) >= lock_time)
 
 
 # ---------- UI: pick buttons ----------
@@ -244,15 +372,18 @@ class PickView(discord.ui.View):
         super().__init__(timeout=None)
         for i, opt in enumerate(options):
             style = BUTTON_STYLES[i % len(BUTTON_STYLES)]
-            self.add_item(PickButton(opt, style))
+            self.add_item(PickButton(opt, style, i))
 
 
 LOCK_GRACE_MINUTES = 5  # allow a short grace window after kickoff before locking
 
 
 class PickButton(discord.ui.Button):
-    def __init__(self, label: str, style: discord.ButtonStyle):
-        super().__init__(label=label, style=style, custom_id=f"pick_{label}")
+    def __init__(self, label: str, style: discord.ButtonStyle, index: int):
+        # Discord requires every component on a message to have a unique ID.
+        # Use the option position rather than its label so repeated labels do
+        # not make the entire question fail to post.
+        super().__init__(label=label, style=style, custom_id=f"pick_{index}")
 
     async def callback(self, interaction: discord.Interaction):
         member = interaction.user
@@ -265,19 +396,21 @@ class PickButton(discord.ui.Button):
             )
             return
 
-        kickoff_str = q["extra"].get("kickoff_utc")
-        if kickoff_str:
-            kickoff = datetime.datetime.fromisoformat(kickoff_str.replace("Z", "+00:00"))
-            lock_time = kickoff + datetime.timedelta(minutes=LOCK_GRACE_MINUTES)
-            now = datetime.datetime.now(datetime.timezone.utc)
-            if now >= lock_time:
-                existing_pick = get_user_pick(member.id)
-                if existing_pick:
-                    msg = f"Picks are locked - kickoff has passed. Your locked-in pick: **{existing_pick}**"
-                else:
-                    msg = "Picks are locked - kickoff has passed. You didn't lock in a pick, so this one counts as missed."
-                await interaction.response.send_message(msg, ephemeral=True)
-                return
+        if q["qtype"] == "exact_score":
+            await interaction.response.send_message(
+                "This is an exact-score challenge. Use its Submit score button.",
+                ephemeral=True,
+            )
+            return
+
+        if question_is_locked(q):
+            existing_pick = get_user_pick(member.id)
+            if existing_pick:
+                msg = f"Picks are locked. Your locked-in pick: **{existing_pick}**"
+            else:
+                msg = "Picks are locked. You didn't submit a pick."
+            await interaction.response.send_message(msg, ephemeral=True)
+            return
 
         record_pick(member.id, self.label)
         if playing_for_release:
@@ -285,6 +418,93 @@ class PickButton(discord.ui.Button):
         else:
             msg = f"Locked in: **{self.label}**. (Just for fun - you're not in quarantine, so this doesn't count toward a streak.)"
         await interaction.response.send_message(msg, ephemeral=True)
+
+
+class ExactScoreModal(discord.ui.Modal):
+    def __init__(self, home_team: str, away_team: str):
+        super().__init__(title="Full-time score prediction")
+        home_suffix = " goals (home)"
+        away_suffix = " goals (away)"
+        self.home_goals = discord.ui.TextInput(
+            label=f"{home_team[:45 - len(home_suffix)]}{home_suffix}",
+            placeholder="0",
+            min_length=1,
+            max_length=2,
+        )
+        self.away_goals = discord.ui.TextInput(
+            label=f"{away_team[:45 - len(away_suffix)]}{away_suffix}",
+            placeholder="0",
+            min_length=1,
+            max_length=2,
+        )
+        self.add_item(self.home_goals)
+        self.add_item(self.away_goals)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        q = get_question()
+        if not q or not q["active"] or q["qtype"] != "exact_score":
+            await interaction.response.send_message(
+                "There is no active exact-score challenge.", ephemeral=True
+            )
+            return
+        if question_is_locked(q):
+            await interaction.response.send_message(
+                "Score predictions are locked.", ephemeral=True
+            )
+            return
+
+        try:
+            home = int(self.home_goals.value.strip())
+            away = int(self.away_goals.value.strip())
+        except ValueError:
+            await interaction.response.send_message(
+                "Enter whole numbers only, such as 2 and 1.", ephemeral=True
+            )
+            return
+
+        if not (0 <= home <= 99 and 0 <= away <= 99):
+            await interaction.response.send_message(
+                "Goals must be whole numbers from 0 to 99.", ephemeral=True
+            )
+            return
+
+        prediction = f"{home}-{away}"
+        record_pick(interaction.user.id, prediction)
+        await interaction.response.send_message(
+            f"Locked in privately: **{q['extra']['home_team']} {prediction} "
+            f"{q['extra']['away_team']}**. You may resubmit before the deadline.",
+            ephemeral=True,
+        )
+
+
+class ExactScoreView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Submit score",
+        style=discord.ButtonStyle.primary,
+        custom_id="exact_score_submit",
+    )
+    async def submit_score(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        q = get_question()
+        if not q or not q["active"] or q["qtype"] != "exact_score":
+            await interaction.response.send_message(
+                "There is no active exact-score challenge.", ephemeral=True
+            )
+            return
+        if question_is_locked(q):
+            existing = get_user_pick(interaction.user.id)
+            suffix = f" Your prediction: **{existing}**." if existing else ""
+            await interaction.response.send_message(
+                f"Score predictions are locked.{suffix}", ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(
+            ExactScoreModal(q["extra"]["home_team"], q["extra"]["away_team"])
+        )
 
 
 async def grade_and_announce(guild: discord.Guild, correct_option: str, title: str):
@@ -319,7 +539,11 @@ async def grade_and_announce(guild: discord.Guild, correct_option: str, title: s
         # clutter the results every single day.
         show_line = user_pick is not None or (is_quarantined_now and current > 0)
 
-        if user_pick and user_pick.strip().lower() == correct_option.strip().lower():
+        was_correct = bool(
+            user_pick
+            and user_pick.strip().lower() == correct_option.strip().lower()
+        )
+        if was_correct:
             new_streak = current + 1
             if show_line:
                 results_lines.append(f"✅ {member.display_name}: {new_streak}/{STREAK_TARGET}")
@@ -330,6 +554,12 @@ async def grade_and_announce(guild: discord.Guild, correct_option: str, title: s
                 results_lines.append(f"❌ {member.display_name}: reset ({reason})")
 
         set_streak(user_id, new_streak)
+        update_stats(
+            user_id,
+            picked=user_pick is not None,
+            correct=was_correct,
+            streak=new_streak,
+        )
 
         if (
             is_quarantined_now
@@ -366,13 +596,92 @@ async def post_question_embed(channel, question_text, options, kickoff_utc=None)
         color=discord.Color.red(),
     )
     footer = f"Get to {STREAK_TARGET} in a row to earn release."
-    if kickoff_utc:
-        kickoff = datetime.datetime.fromisoformat(kickoff_utc.replace("Z", "+00:00"))
-        lock_time = kickoff + datetime.timedelta(minutes=LOCK_GRACE_MINUTES)
-        footer += f" Picks lock at {lock_time.strftime('%H:%M UTC')}."
+    q = get_question()
+    lock_time = question_lock_time(q) if q else None
+    if lock_time:
+        footer += f" Picks lock at {lock_time.strftime('%Y-%m-%d %H:%M UTC')}."
     embed.set_footer(text=footer)
     view = PickView(options)
     await channel.send(embed=embed, view=view)
+
+
+async def void_question(guild: discord.Guild, reason: str):
+    close_question()
+    clear_picks()
+    channel = guild.get_channel(ANNOUNCE_CHANNEL_ID) or guild.get_channel(
+        QUESTION_CHANNEL_ID
+    )
+    if channel:
+        await channel.send(
+            f"↩️ The current prediction has been voided ({reason}). "
+            "No streaks or statistics were changed."
+        )
+
+
+async def resolve_exact_score(
+    guild: discord.Guild, home_goals: int, away_goals: int
+):
+    q = get_question()
+    correct_score = f"{home_goals}-{away_goals}"
+    picks = dict(get_all_picks())
+    role = guild.get_role(QUARANTINE_ROLE_ID)
+    released = []
+    blocked = []
+    winners = []
+
+    for user_id, prediction in picks.items():
+        member = guild.get_member(user_id)
+        if member is None:
+            continue
+        hit = prediction == correct_score
+        update_stats(
+            user_id,
+            exact_attempt=True,
+            exact_hit=hit,
+            streak=get_streak(user_id),
+        )
+        if not hit:
+            continue
+        winners.append(member)
+        if is_quarantined(member):
+            if is_blacklisted(user_id):
+                blocked.append(member)
+            else:
+                try:
+                    await member.remove_roles(role)
+                    set_streak(user_id, 0)
+                    released.append(member)
+                except discord.Forbidden:
+                    pass
+
+    close_question()
+    channel = guild.get_channel(ANNOUNCE_CHANNEL_ID) or guild.get_channel(
+        QUESTION_CHANNEL_ID
+    )
+    if channel:
+        home = q["extra"]["home_team"]
+        away = q["extra"]["away_team"]
+        if winners:
+            winner_text = ", ".join(m.mention for m in winners)
+            description = f"Exact-score winners: {winner_text}"
+        else:
+            description = "Nobody predicted the exact score."
+        embed = discord.Embed(
+            title=f"Full-time result: {home} {correct_score} {away}",
+            description=description,
+            color=discord.Color.gold(),
+        )
+        await channel.send(embed=embed)
+        for member in released:
+            await channel.send(
+                f"🎯 {member.mention} predicted the exact full-time score and has been "
+                "released from quarantine!"
+            )
+        for member in blocked:
+            await channel.send(
+                f"🔒 {member.mention} predicted the exact score, but is not eligible "
+                "for automatic release."
+            )
 
 
 _last_auto_post_date = None
@@ -434,6 +743,11 @@ async def auto_resolve_task():
 
     result = football_api.extract_result(match)
     print(f"[auto_resolve] match {q['match_id']} result: {result}")
+    if result["voided"]:
+        guild = bot.get_guild(GUILD_ID)
+        if guild:
+            await void_question(guild, result["status"].lower())
+        return
     if not result["finished"] or result["home_goals"] is None:
         print(f"[auto_resolve] not finished yet, skipping")
         return
@@ -460,7 +774,12 @@ _views_registered = False
 async def on_ready():
     global _views_registered
     init_db()
-    await bot.tree.sync()
+    if SYNC_GUILD_COMMANDS and GUILD_ID:
+        guild_object = discord.Object(id=GUILD_ID)
+        bot.tree.copy_global_to(guild=guild_object)
+        await bot.tree.sync(guild=guild_object)
+    else:
+        await bot.tree.sync()
 
     if not _views_registered:
         q = get_question()
@@ -469,13 +788,17 @@ async def on_ready():
             # the existing Discord message keep working after a restart -
             # without this, old button clicks silently fail/time out since
             # discord.py has no in-memory handler for them anymore.
-            bot.add_view(PickView(q["options"]))
+            if q["qtype"] == "exact_score":
+                bot.add_view(ExactScoreView())
+            else:
+                bot.add_view(PickView(q["options"]))
         _views_registered = True
 
-    if not daily_question_task.is_running():
-        daily_question_task.start()
-    if not auto_resolve_task.is_running():
-        auto_resolve_task.start()
+    if ENABLE_AUTOMATION:
+        if not daily_question_task.is_running():
+            daily_question_task.start()
+        if not auto_resolve_task.is_running():
+            auto_resolve_task.start()
     print(f"Logged in as {bot.user}")
 
 
@@ -484,22 +807,44 @@ async def on_ready():
     question="e.g. 'Arsenal vs Chelsea: BTTS?'",
     option_a="First choice, e.g. 'Yes'",
     option_b="Second choice, e.g. 'No'",
+    lock_minutes="Minutes from now until submissions close",
     option_c="Optional third choice, e.g. 'Draw'",
 )
-async def question(interaction: discord.Interaction, question: str, option_a: str, option_b: str, option_c: str = None):
+async def question(
+    interaction: discord.Interaction,
+    question: str,
+    option_a: str,
+    option_b: str,
+    lock_minutes: app_commands.Range[int, 1, 10080],
+    option_c: str = None,
+):
     if not is_mod(interaction):
         await interaction.response.send_message("Mods only.", ephemeral=True)
         return
 
-    options = [option_a, option_b] + ([option_c] if option_c else [])
-    set_question(question, options, auto=False)
+    options = [option_a.strip(), option_b.strip()] + (
+        [option_c.strip()] if option_c else []
+    )
+    if len({option.casefold() for option in options}) != len(options):
+        await interaction.response.send_message(
+            "Each answer option must be different.", ephemeral=True
+        )
+        return
+    lock_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
+        minutes=lock_minutes
+    )
+    extra = {"lock_utc": lock_time.isoformat()}
+    set_question(question, options, qtype="manual", extra=extra, auto=False)
 
     embed = discord.Embed(
         title="Today's Quarantine Prediction",
         description=question,
         color=discord.Color.red(),
     )
-    embed.set_footer(text=f"Get to {STREAK_TARGET} in a row to earn release.")
+    embed.set_footer(
+        text=f"Get to {STREAK_TARGET} in a row to earn release. "
+        f"Picks lock at {lock_time.strftime('%Y-%m-%d %H:%M UTC')}."
+    )
     view = PickView(options)
     await interaction.response.send_message(embed=embed, view=view)
 
@@ -529,6 +874,12 @@ async def resolve(interaction: discord.Interaction, correct_option: str):
         await interaction.response.send_message("No active question to resolve.", ephemeral=True)
         return
 
+    if q["qtype"] == "exact_score":
+        await interaction.response.send_message(
+            "Use /scoreresolve for an exact-score challenge.", ephemeral=True
+        )
+        return
+
     if correct_option not in q["options"]:
         options_list = ", ".join(q["options"])
         await interaction.response.send_message(
@@ -542,6 +893,104 @@ async def resolve(interaction: discord.Interaction, correct_option: str):
     await grade_and_announce(interaction.guild, correct_option, f"Results: {correct_option}")
 
 
+@bot.tree.command(description="Immediately close submissions for the active prediction")
+async def lock(interaction: discord.Interaction):
+    if not is_mod(interaction):
+        await interaction.response.send_message("Mods only.", ephemeral=True)
+        return
+    q = get_question()
+    if not q or not q["active"]:
+        await interaction.response.send_message(
+            "No active question to lock.", ephemeral=True
+        )
+        return
+    if question_is_locked(q):
+        await interaction.response.send_message(
+            "The active question is already locked.", ephemeral=True
+        )
+        return
+    q["extra"]["locked"] = True
+    update_question_extra(q["extra"])
+    await interaction.response.send_message("🔒 Submissions are now locked.")
+
+
+@bot.tree.command(description="Void the active prediction without changing streaks")
+@app_commands.describe(reason="Why the prediction is being cancelled")
+async def cancel(interaction: discord.Interaction, reason: str = "cancelled by a moderator"):
+    if not is_mod(interaction):
+        await interaction.response.send_message("Mods only.", ephemeral=True)
+        return
+    q = get_question()
+    if not q or not q["active"]:
+        await interaction.response.send_message(
+            "No active question to cancel.", ephemeral=True
+        )
+        return
+    await interaction.response.send_message("Voiding prediction...", ephemeral=True)
+    await void_question(interaction.guild, reason)
+
+
+@bot.tree.command(description="Post a private full-time exact-score challenge")
+@app_commands.describe(
+    home_team="Home team name",
+    away_team="Away team name",
+    lock_minutes="Minutes from now until score submissions close",
+)
+async def scorequestion(
+    interaction: discord.Interaction,
+    home_team: str,
+    away_team: str,
+    lock_minutes: app_commands.Range[int, 1, 10080],
+):
+    if not is_mod(interaction):
+        await interaction.response.send_message("Mods only.", ephemeral=True)
+        return
+
+    lock_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
+        minutes=lock_minutes
+    )
+    text = f"{home_team} vs {away_team} — predict the exact full-time score."
+    extra = {
+        "home_team": home_team,
+        "away_team": away_team,
+        "lock_utc": lock_time.isoformat(),
+    }
+    set_question(text, [], qtype="exact_score", extra=extra, auto=False)
+    embed = discord.Embed(
+        title="Instant Release: Exact Score",
+        description=text,
+        color=discord.Color.gold(),
+    )
+    embed.set_footer(
+        text=f"An exact FT score earns instant release. "
+        f"Entries lock at {lock_time.strftime('%Y-%m-%d %H:%M UTC')}."
+    )
+    await interaction.response.send_message(embed=embed, view=ExactScoreView())
+
+
+@bot.tree.command(description="Resolve the active full-time exact-score challenge")
+@app_commands.describe(
+    home_goals="Home team's full-time goals",
+    away_goals="Away team's full-time goals",
+)
+async def scoreresolve(
+    interaction: discord.Interaction,
+    home_goals: app_commands.Range[int, 0, 99],
+    away_goals: app_commands.Range[int, 0, 99],
+):
+    if not is_mod(interaction):
+        await interaction.response.send_message("Mods only.", ephemeral=True)
+        return
+    q = get_question()
+    if not q or not q["active"] or q["qtype"] != "exact_score":
+        await interaction.response.send_message(
+            "There is no active exact-score challenge.", ephemeral=True
+        )
+        return
+    await interaction.response.send_message("Resolving exact score...", ephemeral=True)
+    await resolve_exact_score(interaction.guild, home_goals, away_goals)
+
+
 @bot.tree.command(description="Check your current streak, or someone else's")
 async def streak(interaction: discord.Interaction, user: discord.Member = None):
     target = user or interaction.user
@@ -549,6 +998,28 @@ async def streak(interaction: discord.Interaction, user: discord.Member = None):
     await interaction.response.send_message(
         f"{target.display_name}'s streak: **{s}/{STREAK_TARGET}**"
     )
+
+
+@bot.tree.command(description="Show prediction performance for yourself or another user")
+async def stats(interaction: discord.Interaction, user: discord.Member = None):
+    target = user or interaction.user
+    data = get_stats(target.id)
+    total = data["total_picks"]
+    accuracy = (data["correct_picks"] / total * 100) if total else 0
+    embed = discord.Embed(
+        title=f"Prediction Stats — {target.display_name}",
+        color=discord.Color.blue(),
+    )
+    embed.add_field(name="Current streak", value=str(get_streak(target.id)))
+    embed.add_field(name="Best streak", value=str(data["best_streak"]))
+    embed.add_field(name="Regular picks", value=str(total))
+    embed.add_field(name="Correct", value=str(data["correct_picks"]))
+    embed.add_field(name="Accuracy", value=f"{accuracy:.1f}%")
+    embed.add_field(
+        name="Exact scores",
+        value=f"{data['exact_score_hits']}/{data['exact_score_attempts']}",
+    )
+    await interaction.response.send_message(embed=embed)
 
 
 blacklist_group = app_commands.Group(
