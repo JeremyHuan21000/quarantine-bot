@@ -12,6 +12,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 import football_api
+import sports_api
 import question_gen
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -26,6 +27,8 @@ MOD_ROLE_IDS = {
 DAILY_POST_HOUR_UTC = int(os.getenv("DAILY_POST_HOUR_UTC", "10"))
 ENABLE_AUTOMATION = os.getenv("ENABLE_AUTOMATION", "true").lower() == "true"
 SYNC_GUILD_COMMANDS = os.getenv("SYNC_GUILD_COMMANDS", "false").lower() == "true"
+SPORTS_DATA_PROVIDER = os.getenv("SPORTS_DATA_PROVIDER", "football_data").lower()
+data_api = sports_api if SPORTS_DATA_PROVIDER == "thesportsdb" else football_api
 
 DB_PATH = os.getenv("DB_PATH", "quarantine.db")
 
@@ -64,6 +67,20 @@ def init_db():
         )
     """)
     c.execute("""
+        CREATE TABLE IF NOT EXISTS score_question (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            question TEXT,
+            extra TEXT,
+            active INTEGER DEFAULT 0
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS score_picks (
+            user_id INTEGER PRIMARY KEY,
+            choice TEXT
+        )
+    """)
+    c.execute("""
         CREATE TABLE IF NOT EXISTS release_blacklist (
             user_id INTEGER PRIMARY KEY
         )
@@ -89,6 +106,31 @@ def init_db():
             COALESCE((SELECT streak FROM streaks WHERE streaks.user_id = user_stats.user_id), 0)
         )
     """)
+
+    # One-time compatibility migration: older builds stored an exact-score
+    # challenge in the daily-question tables. Move it into the independent
+    # score tables so an in-progress challenge survives this upgrade.
+    c.execute(
+        "SELECT question, extra, active FROM current_question "
+        "WHERE id = 1 AND qtype = 'exact_score'"
+    )
+    legacy_score = c.fetchone()
+    if legacy_score:
+        c.execute("SELECT 1 FROM score_question WHERE id = 1 AND active = 1")
+        if not c.fetchone():
+            c.execute("DELETE FROM score_question")
+            c.execute(
+                "INSERT INTO score_question (id, question, extra, active) "
+                "VALUES (1, ?, ?, ?)",
+                legacy_score,
+            )
+            c.execute("DELETE FROM score_picks")
+            c.execute(
+                "INSERT INTO score_picks (user_id, choice) "
+                "SELECT user_id, choice FROM picks"
+            )
+        c.execute("DELETE FROM current_question")
+        c.execute("DELETE FROM picks")
     conn.commit()
     conn.close()
 
@@ -202,6 +244,73 @@ def get_user_pick(user_id: int):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT choice FROM picks WHERE user_id = ?", (user_id,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def set_score_question(question_text: str, extra: dict):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM score_question")
+    c.execute(
+        "INSERT INTO score_question (id, question, extra, active) VALUES (1, ?, ?, 1)",
+        (question_text, json.dumps(extra or {})),
+    )
+    c.execute("DELETE FROM score_picks")
+    conn.commit()
+    conn.close()
+
+
+def get_score_question():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT question, extra, active FROM score_question WHERE id = 1")
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "question": row[0],
+        "extra": json.loads(row[1]) if row[1] else {},
+        "active": bool(row[2]),
+        "qtype": "exact_score",
+    }
+
+
+def close_score_question():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE score_question SET active = 0 WHERE id = 1")
+    conn.commit()
+    conn.close()
+
+
+def record_score_pick(user_id: int, choice: str):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO score_picks (user_id, choice) VALUES (?, ?) "
+        "ON CONFLICT(user_id) DO UPDATE SET choice = ?",
+        (user_id, choice, choice),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_all_score_picks():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT user_id, choice FROM score_picks")
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+
+def get_user_score_pick(user_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT choice FROM score_picks WHERE user_id = ?", (user_id,))
     row = c.fetchone()
     conn.close()
     return row[0] if row else None
@@ -421,28 +530,29 @@ class PickButton(discord.ui.Button):
 
 
 class ExactScoreModal(discord.ui.Modal):
-    def __init__(self, home_team: str, away_team: str):
+    def __init__(self, home_team: str, away_team: str, score_unit: str = "goals"):
         super().__init__(title="Full-time score prediction")
-        home_suffix = " goals (home)"
-        away_suffix = " goals (away)"
+        unit = score_unit if score_unit in {"goals", "points", "runs"} else "goals"
+        home_suffix = f" {unit} (home)"
+        away_suffix = f" {unit} (away)"
         self.home_goals = discord.ui.TextInput(
             label=f"{home_team[:45 - len(home_suffix)]}{home_suffix}",
             placeholder="0",
             min_length=1,
-            max_length=2,
+            max_length=3,
         )
         self.away_goals = discord.ui.TextInput(
             label=f"{away_team[:45 - len(away_suffix)]}{away_suffix}",
             placeholder="0",
             min_length=1,
-            max_length=2,
+            max_length=3,
         )
         self.add_item(self.home_goals)
         self.add_item(self.away_goals)
 
     async def on_submit(self, interaction: discord.Interaction):
-        q = get_question()
-        if not q or not q["active"] or q["qtype"] != "exact_score":
+        q = get_score_question()
+        if not q or not q["active"]:
             await interaction.response.send_message(
                 "There is no active exact-score challenge.", ephemeral=True
             )
@@ -462,14 +572,14 @@ class ExactScoreModal(discord.ui.Modal):
             )
             return
 
-        if not (0 <= home <= 99 and 0 <= away <= 99):
+        if not (0 <= home <= 999 and 0 <= away <= 999):
             await interaction.response.send_message(
-                "Goals must be whole numbers from 0 to 99.", ephemeral=True
+                "Scores must be whole numbers from 0 to 999.", ephemeral=True
             )
             return
 
         prediction = f"{home}-{away}"
-        record_pick(interaction.user.id, prediction)
+        record_score_pick(interaction.user.id, prediction)
         await interaction.response.send_message(
             f"Locked in privately: **{q['extra']['home_team']} {prediction} "
             f"{q['extra']['away_team']}**. You may resubmit before the deadline.",
@@ -489,21 +599,25 @@ class ExactScoreView(discord.ui.View):
     async def submit_score(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
-        q = get_question()
-        if not q or not q["active"] or q["qtype"] != "exact_score":
+        q = get_score_question()
+        if not q or not q["active"]:
             await interaction.response.send_message(
                 "There is no active exact-score challenge.", ephemeral=True
             )
             return
         if question_is_locked(q):
-            existing = get_user_pick(interaction.user.id)
+            existing = get_user_score_pick(interaction.user.id)
             suffix = f" Your prediction: **{existing}**." if existing else ""
             await interaction.response.send_message(
                 f"Score predictions are locked.{suffix}", ephemeral=True
             )
             return
         await interaction.response.send_modal(
-            ExactScoreModal(q["extra"]["home_team"], q["extra"]["away_team"])
+            ExactScoreModal(
+                q["extra"]["home_team"],
+                q["extra"]["away_team"],
+                q["extra"].get("score_unit", "goals"),
+            )
         )
 
 
@@ -621,9 +735,9 @@ async def void_question(guild: discord.Guild, reason: str):
 async def resolve_exact_score(
     guild: discord.Guild, home_goals: int, away_goals: int
 ):
-    q = get_question()
+    q = get_score_question()
     correct_score = f"{home_goals}-{away_goals}"
-    picks = dict(get_all_picks())
+    picks = dict(get_all_score_picks())
     role = guild.get_role(QUARANTINE_ROLE_ID)
     released = []
     blocked = []
@@ -654,7 +768,7 @@ async def resolve_exact_score(
                 except discord.Forbidden:
                     pass
 
-    close_question()
+    close_score_question()
     channel = guild.get_channel(ANNOUNCE_CHANNEL_ID) or guild.get_channel(
         QUESTION_CHANNEL_ID
     )
@@ -708,18 +822,23 @@ async def daily_question_task():
         return  # don't overwrite an unresolved question
 
     try:
-        fixtures = await asyncio.to_thread(football_api.get_todays_fixtures)
+        fixtures = await asyncio.to_thread(data_api.get_todays_fixtures)
     except Exception as e:
         print(f"Failed to fetch fixtures: {e}")
         return
 
     if not fixtures:
-        await channel.send("No fixtures available today from the free competitions — skipping today's question.")
+        await channel.send("No eligible events available today — skipping today's question.")
         _last_auto_post_date = today
         return
 
     import random
-    match = random.choice(fixtures)
+    # Soccer remains the primary daily game. Other approved sports are a
+    # fallback only when none of the configured major soccer competitions
+    # has an eligible event today.
+    soccer_fixtures = [m for m in fixtures if m.get("sport", "Soccer") == "Soccer"]
+    selection_pool = soccer_fixtures or fixtures
+    match = random.choice(selection_pool)
     qtype, text, options, extra = question_gen.generate_question(match)
     extra["kickoff_utc"] = match["utcDate"]
     set_question(text, options, match_id=match["id"], qtype=qtype, extra=extra, auto=True)
@@ -736,12 +855,12 @@ async def auto_resolve_task():
         return
 
     try:
-        match = await asyncio.to_thread(football_api.get_match, q["match_id"])
+        match = await asyncio.to_thread(data_api.get_match, q["match_id"])
     except Exception as e:
         print(f"[auto_resolve] Failed to fetch match {q['match_id']}: {e}")
         return
 
-    result = football_api.extract_result(match)
+    result = data_api.extract_result(match)
     print(f"[auto_resolve] match {q['match_id']} result: {result}")
     if result["voided"]:
         guild = bot.get_guild(GUILD_ID)
@@ -788,10 +907,10 @@ async def on_ready():
             # the existing Discord message keep working after a restart -
             # without this, old button clicks silently fail/time out since
             # discord.py has no in-memory handler for them anymore.
-            if q["qtype"] == "exact_score":
-                bot.add_view(ExactScoreView())
-            else:
-                bot.add_view(PickView(q["options"]))
+            bot.add_view(PickView(q["options"]))
+        score_q = get_score_question()
+        if score_q and score_q["active"]:
+            bot.add_view(ExactScoreView())
         _views_registered = True
 
     if ENABLE_AUTOMATION:
@@ -935,12 +1054,19 @@ async def cancel(interaction: discord.Interaction, reason: str = "cancelled by a
     home_team="Home team name",
     away_team="Away team name",
     lock_minutes="Minutes from now until score submissions close",
+    score_unit="How this sport's score is measured",
 )
+@app_commands.choices(score_unit=[
+    app_commands.Choice(name="Goals (soccer or hockey)", value="goals"),
+    app_commands.Choice(name="Points (football or basketball)", value="points"),
+    app_commands.Choice(name="Runs (baseball)", value="runs"),
+])
 async def scorequestion(
     interaction: discord.Interaction,
     home_team: str,
     away_team: str,
     lock_minutes: app_commands.Range[int, 1, 10080],
+    score_unit: app_commands.Choice[str] = None,
 ):
     if not is_mod(interaction):
         await interaction.response.send_message("Mods only.", ephemeral=True)
@@ -949,15 +1075,20 @@ async def scorequestion(
     lock_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
         minutes=lock_minutes
     )
-    text = f"{home_team} vs {away_team} — predict the exact full-time score."
+    unit = score_unit.value if score_unit else "goals"
+    text = (
+        f"{home_team} vs {away_team} — predict the exact full-time score "
+        f"in {unit}."
+    )
     extra = {
         "home_team": home_team,
         "away_team": away_team,
+        "score_unit": unit,
         "lock_utc": lock_time.isoformat(),
     }
-    set_question(text, [], qtype="exact_score", extra=extra, auto=False)
+    set_score_question(text, extra)
     embed = discord.Embed(
-        title="Instant Release: Exact Score",
+        title="Correct Score",
         description=text,
         color=discord.Color.gold(),
     )
@@ -970,25 +1101,25 @@ async def scorequestion(
 
 @bot.tree.command(description="Resolve the active full-time exact-score challenge")
 @app_commands.describe(
-    home_goals="Home team's full-time goals",
-    away_goals="Away team's full-time goals",
+    home_score="Home team's final score",
+    away_score="Away team's final score",
 )
 async def scoreresolve(
     interaction: discord.Interaction,
-    home_goals: app_commands.Range[int, 0, 99],
-    away_goals: app_commands.Range[int, 0, 99],
+    home_score: app_commands.Range[int, 0, 999],
+    away_score: app_commands.Range[int, 0, 999],
 ):
     if not is_mod(interaction):
         await interaction.response.send_message("Mods only.", ephemeral=True)
         return
-    q = get_question()
-    if not q or not q["active"] or q["qtype"] != "exact_score":
+    q = get_score_question()
+    if not q or not q["active"]:
         await interaction.response.send_message(
             "There is no active exact-score challenge.", ephemeral=True
         )
         return
     await interaction.response.send_message("Resolving exact score...", ephemeral=True)
-    await resolve_exact_score(interaction.guild, home_goals, away_goals)
+    await resolve_exact_score(interaction.guild, home_score, away_score)
 
 
 @bot.tree.command(description="Check your current streak, or someone else's")

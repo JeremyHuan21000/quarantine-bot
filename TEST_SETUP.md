@@ -52,7 +52,14 @@ Fill in the test token and test-server IDs. Leave these safeguards enabled:
 DB_PATH=quarantine-test.db
 ENABLE_AUTOMATION=false
 SYNC_GUILD_COMMANDS=true
+SPORTS_DATA_PROVIDER=thesportsdb
+THESPORTSDB_API_KEY=123
 ```
+
+The shared `123` key is enough for initial provider testing. TheSportsDB's
+free daily schedule response is limited to three events per request, so the
+bot queries each approved league separately. A supporter key removes that
+small response limit if the provider is later promoted to the live bot.
 
 Run `python bot.py` once in the terminal. The test-only slash commands should
 appear immediately. Stop it with `Ctrl+C` after confirming it connects.

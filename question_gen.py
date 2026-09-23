@@ -39,6 +39,17 @@ def generate_question(match: dict):
     """
     home = match["homeTeam"]["name"]
     away = match["awayTeam"]["name"]
+    sport = match.get("sport", "Soccer")
+
+    # Football-specific score markets do not translate cleanly to every sport.
+    # Start multi-sport testing with an unambiguous game-winner question.
+    if sport != "Soccer":
+        text = f"{home} vs {away} — Game winner?"
+        options = [home, away]
+        if sport == "American Football":
+            options.insert(1, "Tie")
+        return QTYPE_RESULT, text, options, {"sport": sport}
+
     qtype = _weighted_choice(WEIGHTED_TYPES)
 
     if qtype == QTYPE_RESULT:
@@ -65,7 +76,7 @@ def resolve_answer(qtype: str, extra: dict, home_goals: int, away_goals: int, ho
             return home_name
         if away_goals > home_goals:
             return away_name
-        return "Draw"
+        return "Tie" if extra.get("sport") == "American Football" else "Draw"
 
     if qtype == QTYPE_OVER_UNDER:
         line = extra["line"]

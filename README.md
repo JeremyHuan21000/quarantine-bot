@@ -15,6 +15,12 @@ competitions with delayed scores and does not include corners, cards, or
 other match-stats data. Questions are therefore limited to match result,
 total goals (over/under), and BTTS — all derivable from the final score.
 
+The test instance can instead set `SPORTS_DATA_PROVIDER=thesportsdb` to try a
+curated multi-sport pool containing major soccer leagues and UEFA competitions,
+NHL, NBA, NFL and MLB. The live default remains `football_data` until testing
+is complete. Major soccer fixtures always take priority; the other sports are
+used only when no eligible soccer fixture is available that day.
+
 ## Setup
 
 1. **Create a bot** at https://discord.com/developers/applications
@@ -127,10 +133,12 @@ external database needed.
 - `/stats [@user]` — shows regular-pick accuracy, current and best streaks,
   and exact-score performance.
 - `/leaderboard` — shows all currently quarantined members ranked by streak.
-- `/scorequestion <home_team> <away_team> <lock_minutes>` — **mods only**.
+- `/scorequestion <home_team> <away_team> <lock_minutes> [score_unit]` — **mods only**.
   Posts a private full-time exact-score challenge. Users submit both scores
-  through a modal; an exact hit earns instant release.
-- `/scoreresolve <home_goals> <away_goals>` — **mods only**. Resolves the
+  through a modal; an exact hit earns instant release. Choose goals for soccer
+  or hockey, points for football or basketball, and runs for baseball. This
+  challenge runs independently and does not replace the daily streak question.
+- `/scoreresolve <home_score> <away_score>` — **mods only**. Resolves the
   active exact-score challenge using the final full-time score.
 - `/blacklist add <@user>` — **mods only**. Prevents the bot from automatically
   removing that user's quarantine role. Their picks and streak are still tracked.
@@ -165,9 +173,15 @@ Mods can skip all of this on a given day with `/question` + `/resolve`.
 - Only one question can be active at a time — a new `/question` (manual)
   overwrites the current one and clears picks; the auto-post won't
   overwrite an unresolved question, it'll just wait.
+- One separate correct-score challenge may run alongside the daily question.
+  Posting another `/scorequestion` replaces only the previous score challenge
+  and never clears or replaces the daily prediction or its picks.
 - `STREAK_TARGET` in `.env` controls the streak needed to be released.
 - `DB_PATH` selects the SQLite database. Use `quarantine-test.db` for a test
   instance so it cannot touch live streaks or the live blacklist.
+- `SPORTS_DATA_PROVIDER` selects `football_data` (the live default) or
+  `thesportsdb` (the multi-sport test provider). `SPORTSDB_LEAGUE_IDS` can
+  override the curated TheSportsDB league IDs without a code change.
 - The release blacklist is stored in `quarantine.db`, so it survives bot and
   server restarts. Removing someone from it does not immediately release them;
   they become eligible the next time a question is resolved while their streak
