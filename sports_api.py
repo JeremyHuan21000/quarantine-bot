@@ -98,17 +98,30 @@ def get_todays_fixtures():
     matches = []
     seen = set()
 
-    # Per-league requests avoid the free daily endpoint's 3-event truncation.
+    # The free daily endpoint can return only a small slice of a league's
+    # schedule. Merge it with the league's next event so a postponed or
+    # already-finished event does not hide a later eligible game today.
     for league_id in LEAGUE_IDS:
-        try:
-            data = _get("eventsday.php", d=today, l=league_id)
-        except requests.RequestException as exc:
-            print(f"[sports_api] Failed to fetch league {league_id}: {exc}")
-            continue
+        events = []
+        requests_to_make = (
+            ("eventsday.php", {"d": today, "l": league_id}),
+            ("eventsnextleague.php", {"id": league_id}),
+        )
+        for endpoint, params in requests_to_make:
+            try:
+                data = _get(endpoint, **params)
+                events.extend(data.get("events") or [])
+            except requests.RequestException as exc:
+                print(
+                    f"[sports_api] Failed to fetch {endpoint} for league "
+                    f"{league_id}: {exc}"
+                )
 
-        for event in data.get("events") or []:
+        for event in events:
             event_id = event.get("idEvent")
             if not event_id or event_id in seen:
+                continue
+            if event.get("dateEvent") != today:
                 continue
             if str(event.get("strPostponed", "no")).lower() == "yes":
                 continue
