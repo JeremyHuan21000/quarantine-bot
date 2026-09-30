@@ -21,6 +21,7 @@ QUARANTINE_ROLE_ID = int(os.getenv("QUARANTINE_ROLE_ID", "0"))
 QUESTION_CHANNEL_ID = int(os.getenv("QUESTION_CHANNEL_ID", "0"))
 ANNOUNCE_CHANNEL_ID = int(os.getenv("ANNOUNCE_CHANNEL_ID", "0"))
 STREAK_TARGET = int(os.getenv("STREAK_TARGET", "7"))
+FREEZE_UNLOCK_STREAK = int(os.getenv("FREEZE_UNLOCK_STREAK", "3"))
 MOD_ROLE_IDS = {
     int(r.strip()) for r in os.getenv("MOD_ROLE_IDS", "").split(",") if r.strip()
 }
@@ -85,6 +86,20 @@ def init_db():
             user_id INTEGER PRIMARY KEY
         )
     """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS streak_freezes (
+            user_id INTEGER PRIMARY KEY,
+            available INTEGER DEFAULT 0
+        )
+    """)
+    # Give one freeze to people who had already reached the unlock streak
+    # before this feature was installed. Consumed rows remain in the table,
+    # so restarting the bot cannot replenish a used freeze.
+    c.execute(
+        "INSERT OR IGNORE INTO streak_freezes (user_id, available) "
+        "SELECT user_id, 1 FROM streaks WHERE streak >= ?",
+        (FREEZE_UNLOCK_STREAK,),
+    )
     c.execute("""
         CREATE TABLE IF NOT EXISTS user_stats (
             user_id INTEGER PRIMARY KEY,
@@ -154,6 +169,43 @@ def set_streak(user_id: int, value: int):
     )
     conn.commit()
     conn.close()
+
+
+def has_freeze(user_id: int) -> bool:
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "SELECT available FROM streak_freezes WHERE user_id = ?",
+        (user_id,),
+    )
+    row = c.fetchone()
+    conn.close()
+    return bool(row and row[0])
+
+
+def set_freeze(user_id: int, available: bool):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO streak_freezes (user_id, available) VALUES (?, ?) "
+        "ON CONFLICT(user_id) DO UPDATE SET available = ?",
+        (user_id, int(available), int(available)),
+    )
+    conn.commit()
+    conn.close()
+
+
+def calculate_streak_result(current: int, was_correct: bool, freeze_available: bool):
+    """Return (new streak, freeze available, freeze used, freeze earned)."""
+    if was_correct:
+        new_streak = current + 1
+        freeze_earned = new_streak == FREEZE_UNLOCK_STREAK and not freeze_available
+        return new_streak, freeze_available or freeze_earned, False, freeze_earned
+
+    if freeze_available and current > 0:
+        return current, False, True, False
+
+    return 0, False, False, False
 
 
 def clear_picks():
@@ -468,6 +520,12 @@ def question_is_locked(q: dict) -> bool:
     return bool(lock_time and datetime.datetime.now(datetime.timezone.utc) >= lock_time)
 
 
+def discord_lock_text(lock_time: datetime.datetime, label: str = "Picks") -> str:
+    """Format a lock deadline in each Discord user's local timezone."""
+    timestamp = int(lock_time.timestamp())
+    return f"🔒 {label} lock <t:{timestamp}:R> (<t:{timestamp}:t>)."
+
+
 # ---------- UI: pick buttons ----------
 BUTTON_STYLES = [
     discord.ButtonStyle.primary,
@@ -657,12 +715,26 @@ async def grade_and_announce(guild: discord.Guild, correct_option: str, title: s
             user_pick
             and user_pick.strip().lower() == correct_option.strip().lower()
         )
+        freeze_before = has_freeze(user_id)
+        new_streak, freeze_after, freeze_used, freeze_earned = calculate_streak_result(
+            current, was_correct, freeze_before
+        )
+        set_freeze(user_id, freeze_after)
+
         if was_correct:
-            new_streak = current + 1
             if show_line:
-                results_lines.append(f"✅ {member.display_name}: {new_streak}/{STREAK_TARGET}")
+                freeze_note = " 🧊" if freeze_earned else ""
+                results_lines.append(
+                    f"✅ {member.display_name}: {new_streak}/{STREAK_TARGET}{freeze_note}"
+                )
+        elif freeze_used:
+            if show_line:
+                reason = "missed" if not user_pick else "wrong"
+                results_lines.append(
+                    f"🧊 {member.display_name}: {new_streak}/{STREAK_TARGET} "
+                    f"(freeze used, {reason})"
+                )
         else:
-            new_streak = 0
             if show_line:
                 reason = "missed" if not user_pick else "wrong"
                 results_lines.append(f"❌ {member.display_name}: reset ({reason})")
@@ -683,6 +755,7 @@ async def grade_and_announce(guild: discord.Guild, correct_option: str, title: s
             try:
                 await member.remove_roles(role)
                 set_streak(user_id, 0)
+                set_freeze(user_id, False)
                 released.append(member)
             except discord.Forbidden:
                 pass
@@ -704,17 +777,17 @@ async def grade_and_announce(guild: discord.Guild, correct_option: str, title: s
 
 
 async def post_question_embed(channel, question_text, options, kickoff_utc=None):
-    embed = discord.Embed(
-        title="Today's Quarantine Prediction",
-        description=question_text,
-        color=discord.Color.red(),
-    )
-    footer = f"Get to {STREAK_TARGET} in a row to earn release."
     q = get_question()
     lock_time = question_lock_time(q) if q else None
+    description = question_text
     if lock_time:
-        footer += f" Picks lock at {lock_time.strftime('%Y-%m-%d %H:%M UTC')}."
-    embed.set_footer(text=footer)
+        description += f"\n\n{discord_lock_text(lock_time)}"
+    embed = discord.Embed(
+        title="Today's Quarantine Prediction",
+        description=description,
+        color=discord.Color.red(),
+    )
+    embed.set_footer(text=f"Get to {STREAK_TARGET} in a row to earn release.")
     view = PickView(options)
     await channel.send(embed=embed, view=view)
 
@@ -764,6 +837,7 @@ async def resolve_exact_score(
                 try:
                     await member.remove_roles(role)
                     set_streak(user_id, 0)
+                    set_freeze(user_id, False)
                     released.append(member)
                 except discord.Forbidden:
                     pass
@@ -828,7 +902,7 @@ async def daily_question_task():
         return
 
     if not fixtures:
-        await channel.send("No eligible events available today — skipping today's question.")
+        await channel.send("No eligible events available today. Skipping today's question.")
         _last_auto_post_date = today
         return
 
@@ -957,13 +1031,10 @@ async def question(
 
     embed = discord.Embed(
         title="Today's Quarantine Prediction",
-        description=question,
+        description=f"{question}\n\n{discord_lock_text(lock_time)}",
         color=discord.Color.red(),
     )
-    embed.set_footer(
-        text=f"Get to {STREAK_TARGET} in a row to earn release. "
-        f"Picks lock at {lock_time.strftime('%Y-%m-%d %H:%M UTC')}."
-    )
+    embed.set_footer(text=f"Get to {STREAK_TARGET} in a row to earn release.")
     view = PickView(options)
     await interaction.response.send_message(embed=embed, view=view)
 
@@ -1077,7 +1148,7 @@ async def scorequestion(
     )
     unit = score_unit.value if score_unit else "goals"
     text = (
-        f"{home_team} vs {away_team} — predict the exact full-time score "
+        f"{home_team} vs {away_team}: Predict the exact full-time score "
         f"in {unit}."
     )
     extra = {
@@ -1089,13 +1160,10 @@ async def scorequestion(
     set_score_question(text, extra)
     embed = discord.Embed(
         title="Correct Score",
-        description=text,
+        description=f"{text}\n\n{discord_lock_text(lock_time, 'Entries')}",
         color=discord.Color.gold(),
     )
-    embed.set_footer(
-        text=f"An exact FT score earns instant release. "
-        f"Entries lock at {lock_time.strftime('%Y-%m-%d %H:%M UTC')}."
-    )
+    embed.set_footer(text="An exact FT score earns instant release.")
     await interaction.response.send_message(embed=embed, view=ExactScoreView())
 
 
@@ -1126,8 +1194,9 @@ async def scoreresolve(
 async def streak(interaction: discord.Interaction, user: discord.Member = None):
     target = user or interaction.user
     s = get_streak(target.id)
+    freeze = " 🧊" if has_freeze(target.id) else ""
     await interaction.response.send_message(
-        f"{target.display_name}'s streak: **{s}/{STREAK_TARGET}**"
+        f"{target.display_name}'s streak: **{s}/{STREAK_TARGET}**{freeze}"
     )
 
 
@@ -1138,10 +1207,18 @@ async def stats(interaction: discord.Interaction, user: discord.Member = None):
     total = data["total_picks"]
     accuracy = (data["correct_picks"] / total * 100) if total else 0
     embed = discord.Embed(
-        title=f"Prediction Stats — {target.display_name}",
+        title=f"Prediction Stats - {target.display_name}",
         color=discord.Color.blue(),
     )
     embed.add_field(name="Current streak", value=str(get_streak(target.id)))
+    current_streak = get_streak(target.id)
+    if has_freeze(target.id):
+        freeze_status = "Ready 🧊"
+    elif current_streak >= FREEZE_UNLOCK_STREAK:
+        freeze_status = "Used"
+    else:
+        freeze_status = f"Unlocks at {FREEZE_UNLOCK_STREAK}"
+    embed.add_field(name="Streak freeze", value=freeze_status)
     embed.add_field(name="Best streak", value=str(data["best_streak"]))
     embed.add_field(name="Regular picks", value=str(total))
     embed.add_field(name="Correct", value=str(data["correct_picks"]))
@@ -1247,12 +1324,36 @@ async def leaderboard(interaction: discord.Interaction):
         member = guild.get_member(user_id)
         name = member.display_name if member else f"User {user_id}"
         tag = "" if user_id in quarantined_ids else " (not quarantined)"
-        lines.append(f"{i}. {name}{tag} — {s}/{STREAK_TARGET}")
+        freeze = " 🧊" if has_freeze(user_id) else ""
+        lines.append(f"{i}. {name}{tag} - {s}/{STREAK_TARGET}{freeze}")
 
     embed = discord.Embed(
         title="Streak Leaderboard",
         description="\n".join(lines),
         color=discord.Color.orange(),
+    )
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(description="Post the latest quarantine bot update notes")
+async def patchnotes(interaction: discord.Interaction):
+    if not is_mod(interaction):
+        await interaction.response.send_message("Mods only.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="Quarantine Bot Update",
+        description=(
+            "**Streak freezes are here 🧊**\n"
+            f"Reach a {FREEZE_UNLOCK_STREAK}-day streak to earn one freeze.\n\n"
+            "• A wrong or missed prediction uses the freeze instead of resetting your streak.\n"
+            "• You only get one freeze during each streak run.\n"
+            f"• After your streak resets to 0, you can earn another by reaching "
+            f"{FREEZE_UNLOCK_STREAK} again.\n"
+            "• Cancelled or voided predictions do not use your freeze.\n\n"
+            "Use `/stats` or `/streak` to check if your freeze is ready."
+        ),
+        color=discord.Color.blue(),
     )
     await interaction.response.send_message(embed=embed)
 
