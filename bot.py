@@ -26,7 +26,7 @@ MOD_ROLE_IDS = {
     int(r.strip()) for r in os.getenv("MOD_ROLE_IDS", "").split(",") if r.strip()
 }
 DAILY_POST_HOUR_UTC = int(os.getenv("DAILY_POST_HOUR_UTC", "10"))
-MIN_PREDICTION_LEAD_HOURS = max(0, float(os.getenv("MIN_PREDICTION_LEAD_HOURS", "4")))
+MIN_PREDICTION_LEAD_HOURS = max(0, float(os.getenv("MIN_PREDICTION_LEAD_HOURS", "8")))
 ENABLE_AUTOMATION = os.getenv("ENABLE_AUTOMATION", "true").lower() == "true"
 SYNC_GUILD_COMMANDS = os.getenv("SYNC_GUILD_COMMANDS", "false").lower() == "true"
 SPORTS_DATA_PROVIDER = os.getenv("SPORTS_DATA_PROVIDER", "football_data").lower()
