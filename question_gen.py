@@ -11,6 +11,14 @@ point of quarantine release is that it should be genuinely difficult:
 """
 import random
 
+SPORT_LABELS = {
+    "Ice Hockey": "NHL",
+    "Basketball": "NBA",
+    "American Football": "NFL",
+    "Baseball": "MLB",
+    "Soccer": "Soccer",
+}
+
 QTYPE_RESULT = "result"
 QTYPE_OVER_UNDER = "over_under"
 QTYPE_BTTS = "btts"
@@ -40,11 +48,19 @@ def generate_question(match: dict):
     home = match["homeTeam"]["name"]
     away = match["awayTeam"]["name"]
     sport = match.get("sport", "Soccer")
+    league_name = match.get("competition", {}).get("name", "")
+    sport_label = SPORT_LABELS.get(sport, sport)
+    league_upper = league_name.upper()
+    for code in ("NHL", "NFL", "NBA", "MLB"):
+        if code in league_upper.split() or league_upper == code:
+            sport_label = code
+            break
+    matchup = f"{home} vs {away} ({sport_label})"
 
     # Football-specific score markets do not translate cleanly to every sport.
     # Start multi-sport testing with an unambiguous game-winner question.
     if sport != "Soccer":
-        text = f"{home} vs {away} — Game winner?"
+        text = f"{matchup} — Game winner?"
         options = [home, away]
         if sport == "American Football":
             options.insert(1, "Tie")
@@ -53,18 +69,18 @@ def generate_question(match: dict):
     qtype = _weighted_choice(WEIGHTED_TYPES)
 
     if qtype == QTYPE_RESULT:
-        text = f"{home} vs {away} — Full-time result?"
+        text = f"{matchup} — Full-time result?"
         options = [home, "Draw", away]
         return qtype, text, options, {}
 
     if qtype == QTYPE_OVER_UNDER:
         line = random.choice(OVER_UNDER_LINES)
-        text = f"{home} vs {away} — Total goals: Over or Under {line}?"
+        text = f"{matchup} — Total goals: Over or Under {line}?"
         options = [f"Over {line}", f"Under {line}"]
         return qtype, text, options, {"line": line}
 
     # BTTS
-    text = f"{home} vs {away} — Both teams to score?"
+    text = f"{matchup} — Both teams to score?"
     options = ["Yes", "No"]
     return qtype, text, options, {}
 

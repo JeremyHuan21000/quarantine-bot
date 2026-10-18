@@ -133,10 +133,11 @@ external database needed.
 - `/stats [@user]` — shows regular-pick accuracy, current and best streaks,
   and exact-score performance.
 - `/leaderboard` — shows all currently quarantined members ranked by streak.
-- `/scorequestion <home_team> <away_team> <lock_minutes> [score_unit]` — **mods only**.
+- `/scorequestion <home_team> <away_team> <lock_minutes> [score_unit] [sport]` — **mods only**.
   Posts a private full-time exact-score challenge. Users submit both scores
   through a modal; an exact hit earns instant release. Choose goals for soccer
-  or hockey, points for football or basketball, and runs for baseball. This
+  or hockey, points for football or basketball, and runs for baseball. The
+  optional sport selection labels the game as NHL, NFL, NBA, MLB, or Soccer. This
   challenge runs independently and does not replace the daily streak question.
 - `/scoreresolve <home_score> <away_score>` — **mods only**. Resolves the
   active exact-score challenge using the final full-time score.
@@ -150,8 +151,9 @@ external database needed.
 
 1. Once an hour, the bot checks whether it's `DAILY_POST_HOUR_UTC` and
    whether a question has already been posted today. If not, it pulls
-   today's fixtures from football-data.org, picks one at random, and
-   generates a question — weighted toward 3-way match result and extreme
+   upcoming fixtures (including the following UTC day for late-night North American games), filters out games starting
+   within `MIN_PREDICTION_LEAD_HOURS` (8 hours by default), picks one at
+   random, and generates a sport-labeled question — weighted toward 3-way match result and extreme
    over/under lines (0.5, 1.5, 4.5, 5.5) rather than near-coinflip markets,
    so it's a genuinely hard pick, not a layup.
 2. Quarantined members click a button to lock in their pick (one pick per
@@ -179,6 +181,9 @@ Mods can skip all of this on a given day with `/question` + `/resolve`.
 - `STREAK_TARGET` in `.env` controls the streak needed to be released.
 - `DB_PATH` selects the SQLite database. Use `quarantine-test.db` for a test
   instance so it cannot touch live streaks or the live blacklist.
+- `MIN_PREDICTION_LEAD_HOURS` controls the minimum lead time for automated
+  predictions (8 hours by default). Invalid or missing kickoff times are
+  skipped; if no games qualify, no auto question posts that day.
 - `SPORTS_DATA_PROVIDER` selects `football_data` (the live default) or
   `thesportsdb` (the multi-sport test provider). `SPORTSDB_LEAGUE_IDS` can
   override the curated TheSportsDB league IDs without a code change.

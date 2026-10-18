@@ -26,6 +26,7 @@ MOD_ROLE_IDS = {
     int(r.strip()) for r in os.getenv("MOD_ROLE_IDS", "").split(",") if r.strip()
 }
 DAILY_POST_HOUR_UTC = int(os.getenv("DAILY_POST_HOUR_UTC", "10"))
+MIN_PREDICTION_LEAD_HOURS = max(0, float(os.getenv("MIN_PREDICTION_LEAD_HOURS", "8")))
 ENABLE_AUTOMATION = os.getenv("ENABLE_AUTOMATION", "true").lower() == "true"
 SYNC_GUILD_COMMANDS = os.getenv("SYNC_GUILD_COMMANDS", "false").lower() == "true"
 SPORTS_DATA_PROVIDER = os.getenv("SPORTS_DATA_PROVIDER", "football_data").lower()
@@ -503,6 +504,23 @@ def parse_utc(value: str) -> datetime.datetime:
     return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def eligible_fixtures(fixtures, now=None):
+    """Keep fixtures with valid kickoffs more than the lead time away."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    cutoff = now + datetime.timedelta(hours=MIN_PREDICTION_LEAD_HOURS)
+    eligible = []
+    for fixture in fixtures:
+        try:
+            kickoff = parse_utc(fixture["utcDate"])
+            if kickoff.tzinfo is None:
+                kickoff = kickoff.replace(tzinfo=datetime.timezone.utc)
+            if kickoff > cutoff:
+                eligible.append(fixture)
+        except (KeyError, TypeError, ValueError):
+            continue
+    return eligible
+
+
 def question_lock_time(q: dict):
     lock_utc = q["extra"].get("lock_utc")
     if lock_utc:
@@ -901,8 +919,9 @@ async def daily_question_task():
         print(f"Failed to fetch fixtures: {e}")
         return
 
+    fixtures = eligible_fixtures(fixtures)
     if not fixtures:
-        await channel.send("No eligible events available today. Skipping today's question.")
+        await channel.send("No events with enough time before kickoff available today. Skipping today's question.")
         _last_auto_post_date = today
         return
 
@@ -1126,18 +1145,29 @@ async def cancel(interaction: discord.Interaction, reason: str = "cancelled by a
     away_team="Away team name",
     lock_minutes="Minutes from now until score submissions close",
     score_unit="How this sport's score is measured",
+    sport="Optional sport/league label for the prediction",
 )
-@app_commands.choices(score_unit=[
-    app_commands.Choice(name="Goals (soccer or hockey)", value="goals"),
-    app_commands.Choice(name="Points (football or basketball)", value="points"),
-    app_commands.Choice(name="Runs (baseball)", value="runs"),
-])
+@app_commands.choices(
+    score_unit=[
+        app_commands.Choice(name="Goals (soccer or hockey)", value="goals"),
+        app_commands.Choice(name="Points (football or basketball)", value="points"),
+        app_commands.Choice(name="Runs (baseball)", value="runs"),
+    ],
+    sport=[
+        app_commands.Choice(name="NHL", value="NHL"),
+        app_commands.Choice(name="NFL", value="NFL"),
+        app_commands.Choice(name="NBA", value="NBA"),
+        app_commands.Choice(name="MLB", value="MLB"),
+        app_commands.Choice(name="Soccer", value="Soccer"),
+    ],
+)
 async def scorequestion(
     interaction: discord.Interaction,
     home_team: str,
     away_team: str,
     lock_minutes: app_commands.Range[int, 1, 10080],
     score_unit: app_commands.Choice[str] = None,
+    sport: app_commands.Choice[str] = None,
 ):
     if not is_mod(interaction):
         await interaction.response.send_message("Mods only.", ephemeral=True)
@@ -1147,14 +1177,16 @@ async def scorequestion(
         minutes=lock_minutes
     )
     unit = score_unit.value if score_unit else "goals"
+    sport_label = f" ({sport.value})" if sport else ""
     text = (
-        f"{home_team} vs {away_team}: Predict the exact full-time score "
+        f"{home_team} vs {away_team}{sport_label}: Predict the exact full-time score "
         f"in {unit}."
     )
     extra = {
         "home_team": home_team,
         "away_team": away_team,
         "score_unit": unit,
+        "sport": sport.value if sport else None,
         "lock_utc": lock_time.isoformat(),
     }
     set_score_question(text, extra)
