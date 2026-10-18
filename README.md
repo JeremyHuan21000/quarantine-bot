@@ -151,8 +151,8 @@ external database needed.
 
 1. Once an hour, the bot checks whether it's `DAILY_POST_HOUR_UTC` and
    whether a question has already been posted today. If not, it pulls
-   today's fixtures from football-data.org, filters out games starting
-   within `MIN_PREDICTION_LEAD_HOURS` (4 hours by default), picks one at
+   upcoming fixtures (including the following UTC day for late-night North American games), filters out games starting
+   within `MIN_PREDICTION_LEAD_HOURS` (8 hours by default), picks one at
    random, and generates a sport-labeled question — weighted toward 3-way match result and extreme
    over/under lines (0.5, 1.5, 4.5, 5.5) rather than near-coinflip markets,
    so it's a genuinely hard pick, not a layup.
@@ -182,7 +182,7 @@ Mods can skip all of this on a given day with `/question` + `/resolve`.
 - `DB_PATH` selects the SQLite database. Use `quarantine-test.db` for a test
   instance so it cannot touch live streaks or the live blacklist.
 - `MIN_PREDICTION_LEAD_HOURS` controls the minimum lead time for automated
-  predictions (4 hours by default). Invalid or missing kickoff times are
+  predictions (8 hours by default). Invalid or missing kickoff times are
   skipped; if no games qualify, no auto question posts that day.
 - `SPORTS_DATA_PROVIDER` selects `football_data` (the live default) or
   `thesportsdb` (the multi-sport test provider). `SPORTSDB_LEAGUE_IDS` can
