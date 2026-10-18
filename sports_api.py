@@ -93,8 +93,9 @@ def _normalize_event(event):
 
 
 def get_todays_fixtures():
-    """Fetch today's upcoming events from only the configured major leagues."""
-    today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+    """Fetch upcoming events for today and tomorrow (UTC) from major leagues."""
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+    dates = (today.isoformat(), (today + datetime.timedelta(days=1)).isoformat())
     matches = []
     seen = set()
 
@@ -104,7 +105,7 @@ def get_todays_fixtures():
     for league_id in LEAGUE_IDS:
         events = []
         requests_to_make = (
-            ("eventsday.php", {"d": today, "l": league_id}),
+            *(("eventsday.php", {"d": date, "l": league_id}) for date in dates),
             ("eventsnextleague.php", {"id": league_id}),
         )
         for endpoint, params in requests_to_make:
@@ -121,7 +122,7 @@ def get_todays_fixtures():
             event_id = event.get("idEvent")
             if not event_id or event_id in seen:
                 continue
-            if event.get("dateEvent") != today:
+            if event.get("dateEvent") not in dates:
                 continue
             if str(event.get("strPostponed", "no")).lower() == "yes":
                 continue
