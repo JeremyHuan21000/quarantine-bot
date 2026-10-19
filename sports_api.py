@@ -93,9 +93,11 @@ def _normalize_event(event):
 
 
 def get_todays_fixtures():
-    """Fetch upcoming events for today and tomorrow (UTC) from major leagues."""
+    """Fetch today’s fixtures plus overnight North American games."""
     today = datetime.datetime.now(datetime.timezone.utc).date()
     dates = (today.isoformat(), (today + datetime.timedelta(days=1)).isoformat())
+    # Tomorrow is only for North American sports, never next-evening soccer.
+    overnight_leagues = {"4380", "4387", "4391", "4424"}
     matches = []
     seen = set()
 
@@ -103,9 +105,10 @@ def get_todays_fixtures():
     # schedule. Merge it with the league's next event so a postponed or
     # already-finished event does not hide a later eligible game today.
     for league_id in LEAGUE_IDS:
+        allowed_dates = dates if league_id in overnight_leagues else dates[:1]
         events = []
         requests_to_make = (
-            *(("eventsday.php", {"d": date, "l": league_id}) for date in dates),
+            *(("eventsday.php", {"d": date, "l": league_id}) for date in allowed_dates),
             ("eventsnextleague.php", {"id": league_id}),
         )
         for endpoint, params in requests_to_make:
@@ -122,7 +125,7 @@ def get_todays_fixtures():
             event_id = event.get("idEvent")
             if not event_id or event_id in seen:
                 continue
-            if event.get("dateEvent") not in dates:
+            if event.get("dateEvent") not in allowed_dates:
                 continue
             if str(event.get("strPostponed", "no")).lower() == "yes":
                 continue
