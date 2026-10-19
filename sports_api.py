@@ -39,13 +39,19 @@ FINISHED_STATUSES = {"FT", "AOT", "AET", "AP", "Final", "Finished"}
 VOID_STATUSES = {"PST", "CANC", "ABD", "Postponed", "Cancelled", "Canceled", "Abandoned"}
 
 
-def _get(endpoint, max_retries=3, **params):
+class ProviderUnavailable(requests.RequestException):
+    """Rate limited or timed out."""
+
+
+def _get(endpoint, max_retries=1, **params):
     url = f"{BASE_URL}/{endpoint}"
     for attempt in range(max_retries):
-        response = requests.get(url, params=params, timeout=15)
-        if response.status_code == 429 and attempt < max_retries - 1:
-            time.sleep(5 * (attempt + 1))
-            continue
+        try:
+            response = requests.get(url, params=params, timeout=8)
+        except requests.Timeout as exc:
+            raise ProviderUnavailable("TheSportsDB timeout") from exc
+        if response.status_code == 429:
+            raise ProviderUnavailable("TheSportsDB HTTP 429")
         response.raise_for_status()
         return response.json()
     response.raise_for_status()
@@ -107,14 +113,16 @@ def get_todays_fixtures():
     for league_id in LEAGUE_IDS:
         allowed_dates = dates if league_id in overnight_leagues else dates[:1]
         events = []
-        requests_to_make = (
-            *(("eventsday.php", {"d": date, "l": league_id}) for date in allowed_dates),
-            ("eventsnextleague.php", {"id": league_id}),
+        requests_to_make = tuple(
+            ("eventsday.php", {"d": date, "l": league_id}) for date in allowed_dates
         )
         for endpoint, params in requests_to_make:
             try:
                 data = _get(endpoint, **params)
                 events.extend(data.get("events") or [])
+            except ProviderUnavailable as exc:
+                print(f"[sports_api] Aborting lookup: {exc}")
+                raise
             except requests.RequestException as exc:
                 print(
                     f"[sports_api] Failed to fetch {endpoint} for league "
