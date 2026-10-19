@@ -3,6 +3,7 @@ import json
 import sqlite3
 import asyncio
 import datetime
+import random
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -31,6 +32,14 @@ ENABLE_AUTOMATION = os.getenv("ENABLE_AUTOMATION", "true").lower() == "true"
 SYNC_GUILD_COMMANDS = os.getenv("SYNC_GUILD_COMMANDS", "false").lower() == "true"
 SPORTS_DATA_PROVIDER = os.getenv("SPORTS_DATA_PROVIDER", "football_data").lower()
 data_api = sports_api if SPORTS_DATA_PROVIDER == "thesportsdb" else football_api
+
+SPORT_WEIGHTS = {
+    "Ice Hockey": max(0, int(os.getenv("SPORT_WEIGHT_NHL", "45"))),
+    "American Football": max(0, int(os.getenv("SPORT_WEIGHT_NFL", "25"))),
+    "Basketball": max(0, int(os.getenv("SPORT_WEIGHT_NBA", "10"))),
+    "Baseball": max(0, int(os.getenv("SPORT_WEIGHT_MLB", "10"))),
+    "Soccer": max(0, int(os.getenv("SPORT_WEIGHT_SOCCER", "10"))),
+}
 
 DB_PATH = os.getenv("DB_PATH", "quarantine.db")
 
@@ -893,6 +902,21 @@ async def resolve_exact_score(
 _last_auto_post_date = None
 
 
+def choose_weighted_fixture(fixtures):
+    """Choose a sport by weight, then one game from that sport."""
+    fixtures_by_sport = {}
+    for fixture in fixtures:
+        sport = fixture.get("sport", "Soccer")
+        fixtures_by_sport.setdefault(sport, []).append(fixture)
+    available_sports = [sport for sport, games in fixtures_by_sport.items()
+                        if games and SPORT_WEIGHTS.get(sport, 0) > 0]
+    if not available_sports:
+        return random.choice(fixtures)
+    chosen_sport = random.choices(available_sports,
+                                  weights=[SPORT_WEIGHTS[sport] for sport in available_sports], k=1)[0]
+    return random.choice(fixtures_by_sport[chosen_sport])
+
+
 # ---------- Scheduled tasks ----------
 @tasks.loop(minutes=60)
 async def daily_question_task():
@@ -925,13 +949,7 @@ async def daily_question_task():
         _last_auto_post_date = today
         return
 
-    import random
-    # Soccer remains the primary daily game. Other approved sports are a
-    # fallback only when none of the configured major soccer competitions
-    # has an eligible event today.
-    soccer_fixtures = [m for m in fixtures if m.get("sport", "Soccer") == "Soccer"]
-    selection_pool = soccer_fixtures or fixtures
-    match = random.choice(selection_pool)
+    match = choose_weighted_fixture(fixtures)
     qtype, text, options, extra = question_gen.generate_question(match)
     extra["kickoff_utc"] = match["utcDate"]
     set_question(text, options, match_id=match["id"], qtype=qtype, extra=extra, auto=True)
