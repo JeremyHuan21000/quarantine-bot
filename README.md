@@ -152,7 +152,7 @@ external database needed.
 1. Once an hour, the bot checks whether it's `DAILY_POST_HOUR_UTC` and
    whether a question has already been posted today. If not, it pulls
    upcoming fixtures (including the following UTC day for late-night North American games), filters out games starting
-   within `MIN_PREDICTION_LEAD_HOURS` (8 hours by default), picks one at
+   within `MIN_PREDICTION_LEAD_HOURS` (8 hours by default), chooses a sport by configurable weight (NHL 45, NFL 25, MLB 10, NBA 10, soccer 10 by default), then picks a game at
    random, and generates a sport-labeled question — weighted toward 3-way match result and extreme
    over/under lines (0.5, 1.5, 4.5, 5.5) rather than near-coinflip markets,
    so it's a genuinely hard pick, not a layup.
@@ -209,3 +209,5 @@ Use a second Discord application and a separate checkout or directory. Give
 the test copy its own `.env` values, especially a test token, test server IDs,
 and `DB_PATH=quarantine-test.db`. It can run alongside the live service on the
 same Oracle VM.
+
+Sport selection weights can be configured with `SPORT_WEIGHT_NHL`, `SPORT_WEIGHT_NFL`, `SPORT_WEIGHT_MLB`, `SPORT_WEIGHT_NBA`, and `SPORT_WEIGHT_SOCCER`. Only sports with eligible fixtures participate; weights are renormalized when a sport has no available games.
