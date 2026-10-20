@@ -27,6 +27,7 @@ MOD_ROLE_IDS = {
     int(r.strip()) for r in os.getenv("MOD_ROLE_IDS", "").split(",") if r.strip()
 }
 DAILY_POST_HOUR_UTC = int(os.getenv("DAILY_POST_HOUR_UTC", "10"))
+DAILY_RETRY_END_HOUR_UTC = int(os.getenv("DAILY_RETRY_END_HOUR_UTC", "18"))
 MIN_PREDICTION_LEAD_HOURS = max(0, float(os.getenv("MIN_PREDICTION_LEAD_HOURS", "8")))
 ENABLE_AUTOMATION = os.getenv("ENABLE_AUTOMATION", "true").lower() == "true"
 SYNC_GUILD_COMMANDS = os.getenv("SYNC_GUILD_COMMANDS", "false").lower() == "true"
@@ -68,6 +69,11 @@ def init_db():
             extra TEXT,
             active INTEGER DEFAULT 0,
             auto INTEGER DEFAULT 0
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS auto_post_history (
+            post_date TEXT PRIMARY KEY
         )
     """)
     c.execute("""
@@ -918,14 +924,23 @@ def choose_weighted_fixture(fixtures):
 
 
 # ---------- Scheduled tasks ----------
-@tasks.loop(minutes=60)
+@tasks.loop(minutes=15)
 async def daily_question_task():
-    """Auto-post a new hard question once a day, picking a real fixture."""
-    global _last_auto_post_date
-    now = datetime.datetime.utcnow()
-    today = now.date()
+    """Retry the daily post after transient failures, without duplicate posts."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    today = now.date().isoformat()
+    # The window can extend past the normal hour to recover from API outages.
+    if not (DAILY_POST_HOUR_UTC <= now.hour < DAILY_RETRY_END_HOUR_UTC):
+        return
 
-    if now.hour != DAILY_POST_HOUR_UTC or _last_auto_post_date == today:
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        posted = conn.execute(
+            "SELECT 1 FROM auto_post_history WHERE post_date = ?", (today,)
+        ).fetchone()
+    finally:
+        conn.close()
+    if posted:
         return
 
     guild = bot.get_guild(GUILD_ID)
@@ -935,26 +950,46 @@ async def daily_question_task():
 
     q = get_question()
     if q and q["active"]:
-        return  # don't overwrite an unresolved question
+        return  # Never replace an unresolved manual or automatic question.
+    # Also recognize an automatic question posted earlier today before this
+    # history table existed, even if it has since been resolved.
+    if q and q["auto"] and q["extra"].get("auto_post_date") == today:
+        return
 
     try:
         fixtures = await asyncio.to_thread(data_api.get_todays_fixtures)
-    except Exception as e:
-        print(f"Failed to fetch fixtures: {e}")
+    except Exception as exc:
+        print(f"[daily_question] Fixture lookup failed; will retry: {exc}")
         return
 
     fixtures = eligible_fixtures(fixtures)
     if not fixtures:
-        await channel.send("No events with enough time before kickoff available today. Skipping today's question.")
-        _last_auto_post_date = today
+        print("[daily_question] No eligible fixtures; will check again later")
         return
 
     match = choose_weighted_fixture(fixtures)
-    qtype, text, options, extra = question_gen.generate_question(match)
+    qtype, question_text, options, extra = question_gen.generate_question(match)
     extra["kickoff_utc"] = match["utcDate"]
-    set_question(text, options, match_id=match["id"], qtype=qtype, extra=extra, auto=True)
-    await post_question_embed(channel, text, options, kickoff_utc=match["utcDate"])
-    _last_auto_post_date = today
+    extra["auto_post_date"] = today
+    set_question(question_text, options, match_id=match["id"], qtype=qtype,
+                 extra=extra, auto=True)
+    try:
+        await post_question_embed(channel, question_text, options,
+                                  kickoff_utc=match["utcDate"])
+    except Exception as exc:
+        # Leave the active question in place rather than risk posting twice.
+        print(f"[daily_question] Discord post uncertain; check channel: {exc}")
+        return
+
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute("INSERT OR IGNORE INTO auto_post_history (post_date) VALUES (?)",
+                     (today,))
+        conn.commit()
+    finally:
+        conn.close()
+    print(f"[daily_question] Posted {match['homeTeam']['name']} vs "
+          f"{match['awayTeam']['name']} ({match['sport']})")
 
 
 @tasks.loop(minutes=30)
