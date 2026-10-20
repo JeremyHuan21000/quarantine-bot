@@ -1,7 +1,6 @@
 """Multi-sport event provider backed by TheSportsDB v1 API."""
 import datetime
 import os
-import time
 
 import requests
 from dotenv import load_dotenv
@@ -43,18 +42,16 @@ class ProviderUnavailable(requests.RequestException):
     """Rate limited or timed out."""
 
 
-def _get(endpoint, max_retries=1, **params):
+def _get(endpoint, **params):
     url = f"{BASE_URL}/{endpoint}"
-    for attempt in range(max_retries):
-        try:
-            response = requests.get(url, params=params, timeout=8)
-        except requests.Timeout as exc:
-            raise ProviderUnavailable("TheSportsDB timeout") from exc
-        if response.status_code == 429:
-            raise ProviderUnavailable("TheSportsDB HTTP 429")
-        response.raise_for_status()
-        return response.json()
+    try:
+        response = requests.get(url, params=params, timeout=8)
+    except requests.Timeout as exc:
+        raise ProviderUnavailable("TheSportsDB timeout") from exc
+    if response.status_code == 429:
+        raise ProviderUnavailable("TheSportsDB HTTP 429")
     response.raise_for_status()
+    return response.json()
 
 
 def _to_int(value):
@@ -106,11 +103,18 @@ def get_todays_fixtures():
     overnight_leagues = {"4380", "4387", "4391", "4424"}
     matches = []
     seen = set()
+    # Try the preferred North American sports before soccer. A rate limit
+    # later in the lookup should not discard fixtures already retrieved.
+    preferred = ("4380", "4391", "4387", "4424")
+    ordered_leagues = tuple(l for l in preferred if l in LEAGUE_IDS) + tuple(
+        l for l in LEAGUE_IDS if l not in preferred
+    )
+    rate_limited = False
 
     # The free daily endpoint can return only a small slice of a league's
     # schedule. Merge it with the league's next event so a postponed or
     # already-finished event does not hide a later eligible game today.
-    for league_id in LEAGUE_IDS:
+    for league_id in ordered_leagues:
         allowed_dates = dates if league_id in overnight_leagues else dates[:1]
         events = []
         requests_to_make = tuple(
@@ -121,8 +125,9 @@ def get_todays_fixtures():
                 data = _get(endpoint, **params)
                 events.extend(data.get("events") or [])
             except ProviderUnavailable as exc:
-                print(f"[sports_api] Aborting lookup: {exc}")
-                raise
+                print(f"[sports_api] Provider unavailable at league {league_id}: {exc}")
+                rate_limited = True
+                break
             except requests.RequestException as exc:
                 print(
                     f"[sports_api] Failed to fetch {endpoint} for league "
@@ -143,6 +148,11 @@ def get_todays_fixtures():
                 matches.append(_normalize_event(event))
                 seen.add(event_id)
 
+        if rate_limited:
+            break  # Avoid hammering the provider after a 429 or timeout.
+
+    if rate_limited and not matches:
+        raise ProviderUnavailable("TheSportsDB unavailable before any fixtures were fetched")
     return matches
 
 
