@@ -103,6 +103,11 @@ def get_todays_fixtures():
     overnight_leagues = {"4380", "4387", "4391", "4424"}
     matches = []
     seen = set()
+    # Next UTC day is only for games continuing the North American evening.
+    overnight_cutoff = datetime.datetime.combine(
+        today + datetime.timedelta(days=1), datetime.time(12, 0),
+        tzinfo=datetime.timezone.utc,
+    )
     # Try the preferred North American sports before soccer. A rate limit
     # later in the lookup should not discard fixtures already retrieved.
     preferred = ("4380", "4391", "4387", "4424")
@@ -140,6 +145,14 @@ def get_todays_fixtures():
                 continue
             if event.get("dateEvent") not in allowed_dates:
                 continue
+            if league_id in overnight_leagues and event.get("dateEvent") == dates[1]:
+                timestamp = _utc_timestamp(event)
+                try:
+                    kickoff = datetime.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                except (AttributeError, TypeError, ValueError):
+                    continue
+                if kickoff >= overnight_cutoff:
+                    continue
             if str(event.get("strPostponed", "no")).lower() == "yes":
                 continue
             status = event.get("strStatus")
