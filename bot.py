@@ -1009,9 +1009,19 @@ async def auto_resolve_task():
     result = data_api.extract_result(match)
     print(f"[auto_resolve] match {q['match_id']} result: {result}")
     if result["voided"]:
-        guild = bot.get_guild(GUILD_ID)
-        if guild:
-            await void_question(guild, result["status"].lower())
+        # TheSportsDB can incorrectly mark live games as postponed. Never
+        # discard picks or streak opportunities based on one provider flag.
+        # Keep the question active for a moderator to void manually or for
+        # a subsequent valid final score to resolve automatically.
+        raw = match.get("_raw", {})
+        print(
+            f"[auto_resolve] WARNING: unverified void for match {q['match_id']}; "
+            f"raw status={raw.get('strStatus')!r}, "
+            f"postponed={raw.get('strPostponed')!r}, "
+            f"home_score={raw.get('intHomeScore')!r}, "
+            f"away_score={raw.get('intAwayScore')!r}; "
+            "preserving active question and picks for manual review"
+        )
         return
     if not result["finished"] or result["home_goals"] is None:
         print(f"[auto_resolve] not finished yet, skipping")
