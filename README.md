@@ -1,4 +1,4 @@
-# Quarantine Prediction Gauntlet Bot
+# Quarantine Bot
 
 Daily sports prediction game for a Discord #quarantine channel. Members need
 a 7-day correct streak (configurable) to be auto-released.
