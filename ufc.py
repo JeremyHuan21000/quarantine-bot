@@ -263,6 +263,25 @@ def install(bot, db_path, question_channel_id, announce_channel_id, quarantine_r
         await interaction.followup.send("Graded " + str(len(rows)) + " cards. Perfect: " +
                                         str(len(perfect_ids)) + ". Released: " + str(len(released)) + ".", ephemeral=True)
 
+    @group.command(name="cancel", description="Cancel an ungraded UFC challenge without affecting stats")
+    async def cancel(interaction: discord.Interaction, event_id: int):
+        if not is_mod(interaction):
+            await interaction.response.send_message("Mods only.", ephemeral=True)
+            return
+        with connect() as conn:
+            changed = conn.execute("UPDATE ufc_events SET status='cancelled' WHERE id=? AND status='open'",
+                                   (event_id,)).rowcount
+        await interaction.response.send_message(
+            ("Cancelled UFC event #" + str(event_id) + ". No stats or streaks changed.")
+            if changed else "Event not found, already graded, or already cancelled.", ephemeral=True)
+
+    @group.command(name="list", description="List active UFC challenges")
+    async def list_events(interaction: discord.Interaction):
+        events = open_events()
+        await interaction.response.send_message(
+            "\\n".join("#" + str(e["id"]) + " — " + e["name"] + " | Lock: " + e["lock_utc"]
+                      for e in events) if events else "No active UFC challenges.", ephemeral=True)
+
     @group.command(name="stats", description="Show UFC prediction performance")
     async def stats(interaction: discord.Interaction, user: discord.Member = None):
         target = user or interaction.user
