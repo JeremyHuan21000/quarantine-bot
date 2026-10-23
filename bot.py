@@ -15,6 +15,7 @@ from discord.ext import commands, tasks
 import football_api
 import sports_api
 import question_gen
+import ufc
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", "0"))
@@ -1049,6 +1050,7 @@ _views_registered = False
 async def on_ready():
     global _views_registered
     init_db()
+    ufc_init()
     if SYNC_GUILD_COMMANDS and GUILD_ID:
         guild_object = discord.Object(id=GUILD_ID)
         bot.tree.copy_global_to(guild=guild_object)
@@ -1067,6 +1069,8 @@ async def on_ready():
         score_q = get_score_question()
         if score_q and score_q["active"]:
             bot.add_view(ExactScoreView())
+        for ufc_event in ufc_open_events():
+            bot.add_view(UfcOpenCardView(ufc_event['id']))
         _views_registered = True
 
     if ENABLE_AUTOMATION:
@@ -1322,6 +1326,20 @@ async def stats(interaction: discord.Interaction, user: discord.Member = None):
         name="Exact scores",
         value=f"{data['exact_score_hits']}/{data['exact_score_attempts']}",
     )
+    with sqlite3.connect(DB_PATH) as ufc_conn:
+        try:
+            ufc_row = ufc_conn.execute(
+                "SELECT cards_graded, perfect_cards, fight_picks_correct, fight_picks_graded "
+                "FROM ufc_stats WHERE user_id=?", (target.id,)
+            ).fetchone()
+        except sqlite3.OperationalError:
+            ufc_row = None
+    embed.add_field(
+        name="🥊 UFC main cards",
+        value=(f"Perfect: {ufc_row[1]}/{ufc_row[0]} | Fight picks: {ufc_row[2]}/{ufc_row[3]}"
+               if ufc_row else "No graded cards yet"),
+        inline=False,
+    )
     await interaction.response.send_message(embed=embed)
 
 
@@ -1452,5 +1470,10 @@ async def patchnotes(interaction: discord.Interaction):
     )
     await interaction.response.send_message(embed=embed)
 
+
+ufc_init, UfcOpenCardView, ufc_open_events = ufc.install(
+    bot, DB_PATH, QUESTION_CHANNEL_ID, ANNOUNCE_CHANNEL_ID, QUARANTINE_ROLE_ID,
+    is_mod, is_quarantined, is_blacklisted, set_streak, set_freeze,
+)
 
 bot.run(TOKEN)
