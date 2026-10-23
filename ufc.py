@@ -335,22 +335,5 @@ def install(bot, db_path, question_channel_id, announce_channel_id, quarantine_r
             "\\n".join("#" + str(e["id"]) + " — " + e["name"] + " | Lock: " + e["lock_utc"]
                       for e in events) if events else "No active UFC challenges.", ephemeral=True)
 
-    @group.command(name="stats", description="Show UFC prediction performance")
-    async def stats(interaction: discord.Interaction, user: discord.Member = None):
-        target = user or interaction.user
-        with connect() as conn:
-            row = conn.execute("SELECT * FROM ufc_stats WHERE user_id=?", (target.id,)).fetchone()
-            entered = conn.execute("SELECT COUNT(*) FROM ufc_picks WHERE user_id=?", (target.id,)).fetchone()[0]
-        if row:
-            await interaction.response.send_message(
-                "🥊 **" + target.display_name + " — UFC Stats**\n"
-                "Cards entered: " + str(entered) + "\nCards graded: " + str(row["cards_graded"]) +
-                "\nPerfect cards: " + str(row["perfect_cards"]) +
-                "\nCorrect fight picks: " + str(row["fight_picks_correct"]) + "/" +
-                str(row["fight_picks_graded"]), ephemeral=False)
-        else:
-            await interaction.response.send_message("🥊 " + target.display_name +
-                " has entered " + str(entered) + " UFC cards (none graded yet).")
-
     bot.tree.add_command(group)
     return init, OpenCardView, open_events
