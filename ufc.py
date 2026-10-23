@@ -58,7 +58,7 @@ def install(bot, db_path, question_channel_id, announce_channel_id, quarantine_r
                 for i, (a,b) in enumerate(fights)
             ) + "\n\n🔒 Picks lock <t:" + str(int(datetime.datetime.fromisoformat(event["lock_utc"]).timestamp())) + ":F>"
         ), color=discord.Color.red())
-        embed.set_footer(text="Use Make / Edit Picks below. You can change your card until the lock.")
+        embed.set_footer(text="Use Make / Edit Picks below. All five selections auto-save; edits allowed until lock.")
         return embed
 
     class FightSelect(discord.ui.Select):
@@ -72,7 +72,7 @@ def install(bot, db_path, question_channel_id, announce_channel_id, quarantine_r
             self.view.choices[self.idx] = int(self.values[0])
             for option in self.options:
                 option.default = option.value == self.values[0]
-            await interaction.response.edit_message(content=self.view.summary(), view=self.view)
+            await self.view.persist_selection(interaction)
 
     class CardView(discord.ui.View):
         def __init__(self, event, user_id, existing):
@@ -87,16 +87,15 @@ def install(bot, db_path, question_channel_id, announce_channel_id, quarantine_r
         def summary(self):
             selected = sum(x is not None for x in self.choices)
             return ("🥊 **Your UFC fight card** — " + str(selected) + "/" + str(len(self.fights)) +
-                    " selected\nChoose one winner per fight, then press **Save Card**. "
-                    "You may edit and save again until the first main-card fight.")
+                    " selected\nChoose one winner per fight. Your complete card saves automatically. "
+                    "You may edit until the first main-card fight.")
 
-        @discord.ui.button(label="Save Card", style=discord.ButtonStyle.success, row=4)
-        async def save(self, interaction, button):
+        async def persist_selection(self, interaction):
             if interaction.user.id != self.user_id:
                 await interaction.response.send_message("This is someone else's card.", ephemeral=True)
                 return
             if any(choice is None for choice in self.choices):
-                await interaction.response.send_message("Choose a winner in every fight first.", ephemeral=True)
+                await interaction.response.edit_message(content=self.summary(), view=self)
                 return
             event = event_by_id(self.event_id)
             if not event or not unlocked(event):
@@ -114,9 +113,9 @@ def install(bot, db_path, question_channel_id, announce_channel_id, quarantine_r
                     DO UPDATE SET picks=excluded.picks,submitted_utc=excluded.submitted_utc""",
                     (self.event_id,self.user_id,json.dumps(self.choices),
                      datetime.datetime.now(datetime.timezone.utc).isoformat()))
-            await interaction.response.edit_message(content="✅ **Card saved!** You can edit it until kickoff.\n" +
+            await interaction.response.edit_message(content="✅ **Card saved automatically!** You can edit it until kickoff.\n" +
                 "\n".join("Fight " + str(i+1) + ": **" + self.fights[i][side] + "**"
-                          for i,side in enumerate(self.choices)), view=None)
+                          for i,side in enumerate(self.choices)), view=self)
 
     class OpenCardView(discord.ui.View):
         def __init__(self, event_id):
