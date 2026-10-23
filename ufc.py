@@ -262,11 +262,11 @@ def install(bot, db_path, question_channel_id, announce_channel_id, quarantine_r
             fights = json.loads(event["fights"])
             result_embed = discord.Embed(
                 title=event["name"] + " — Official Main Card Results",
-                description=UFC_EMOJI + " **MAIN CARD RESULTS**\\n" +
-                    "\\n".join(
+                description=UFC_EMOJI + " **MAIN CARD RESULTS**\n\n" +
+                    "\n\n".join(
                         ("**MAIN EVENT**" if i == 4 else "**CO-MAIN EVENT**" if i == 3
                          else "**Fight " + str(i+1) + "**") +
-                        "\\n🏆 **" + fights[i][side] + "** defeated " + fights[i][1-side]
+                        "\n🏆 **" + fights[i][side] + "** defeated " + fights[i][1-side]
                         for i, side in enumerate(answers)
                     ),
                 color=discord.Color.gold() if perfect_ids else discord.Color.red(),
@@ -300,7 +300,7 @@ def install(bot, db_path, question_channel_id, announce_channel_id, quarantine_r
             if ranked:
                 result_embed.add_field(
                     name="Closest predictions",
-                    value="\\n".join(
+                    value="\n".join(
                         str(rank) + ". <@" + str(uid) + "> — **" + str(correct) + "/5**"
                         for rank, (correct, uid) in enumerate(ranked[:5], start=1)
                     ),
