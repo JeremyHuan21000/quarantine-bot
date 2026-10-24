@@ -62,7 +62,7 @@ def install(bot, db_path, question_channel_id, announce_channel_id, quarantine_r
                 for i, (a,b) in enumerate(fights)
             ) + "\n\n🔒 Picks lock <t:" + str(int(datetime.datetime.fromisoformat(event["lock_utc"]).timestamp())) + ":F>"
         ), color=discord.Color.red())
-        embed.set_footer(text="Event #" + str(event["id"]) + " • Picks editable until main-card kickoff")
+        embed.set_footer(text="Event #" + str(event["id"]) + " • Picks editable until main-card start")
         return embed
 
     class FightSelect(discord.ui.Select):
@@ -117,7 +117,7 @@ def install(bot, db_path, question_channel_id, announce_channel_id, quarantine_r
                     DO UPDATE SET picks=excluded.picks,submitted_utc=excluded.submitted_utc""",
                     (self.event_id,self.user_id,json.dumps(self.choices),
                      datetime.datetime.now(datetime.timezone.utc).isoformat()))
-            await interaction.response.edit_message(content="✅ **Card saved automatically!** You can edit it until kickoff.\n" +
+            await interaction.response.edit_message(content="✅ **Card saved automatically!** You can edit it until start.\n" +
                 "\n".join("Fight " + str(i+1) + ": **" + self.fights[i][side] + "**"
                           for i,side in enumerate(self.choices)), view=self)
 
@@ -146,7 +146,7 @@ def install(bot, db_path, question_channel_id, announce_channel_id, quarantine_r
 
     @group.command(name="create", description="Create and post a five-fight UFC challenge")
     @app_commands.describe(name="Event name, e.g. UFC 333",
-        lock_utc="First main-card fight kickoff, UTC: YYYY-MM-DD HH:MM",
+        lock_utc="First main-card fight start, UTC: YYYY-MM-DD HH:MM",
         fight1="First bout: Fighter A | Fighter B", fight2="Second bout: Fighter A | Fighter B",
         fight3="Third bout: Fighter A | Fighter B", fight4="Co-main: Fighter A | Fighter B",
         fight5="Main event: Fighter A | Fighter B")
@@ -158,7 +158,7 @@ def install(bot, db_path, question_channel_id, announce_channel_id, quarantine_r
         try:
             lock = datetime.datetime.strptime(lock_utc.strip(), "%Y-%m-%d %H:%M").replace(tzinfo=datetime.timezone.utc)
             if lock <= datetime.datetime.now(datetime.timezone.utc):
-                raise ValueError("kickoff is in the past")
+                raise ValueError("start is in the past")
             fights = []
             for raw in (fight1,fight2,fight3,fight4,fight5):
                 pair = [part.strip() for part in raw.split("|")]
@@ -205,7 +205,7 @@ def install(bot, db_path, question_channel_id, announce_channel_id, quarantine_r
             await interaction.response.send_message("No open UFC event with that ID.", ephemeral=True)
             return
         if unlocked(event):
-            await interaction.response.send_message("Cannot grade before main-card kickoff.", ephemeral=True)
+            await interaction.response.send_message("Cannot grade before main-card start.", ephemeral=True)
             return
         try:
             tokens = [x.strip().upper() for x in winners.split(",")]
