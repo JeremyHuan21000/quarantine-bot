@@ -6,9 +6,9 @@ import sqlite3
 import discord
 from discord import app_commands
 
-UFC_EMOJI = '<:UFC:1563314986569306185>'
-HOLD_EMOJI = '<:HOLD:1563314902758596688>'
-OOOO_EMOJI = '<a:OOOO:1563314940918374400>'
+UFC_EMOJI = '<:UFC:1563309644892348588>'
+HOLD_EMOJI = '<:HOLD:1563313747928547389>'
+OOOO_EMOJI = '<a:OOOO:1563312736115499181>'
 
 def install(bot, db_path, question_channel_id, announce_channel_id, quarantine_role_id,
             is_mod, is_quarantined, is_blacklisted, set_streak, set_freeze):
@@ -126,7 +126,7 @@ def install(bot, db_path, question_channel_id, announce_channel_id, quarantine_r
             super().__init__(timeout=None)
             self.event_id = event_id
             button = discord.ui.Button(label="Make / Edit Picks", style=discord.ButtonStyle.primary,
-                                       emoji=discord.PartialEmoji(name="UFC", id=1563314986569306185), custom_id="ufc:open:" + str(event_id))
+                                       emoji=discord.PartialEmoji(name="UFC", id=1563309644892348588), custom_id="ufc:open:" + str(event_id))
             button.callback = self.open_card
             self.add_item(button)
 
