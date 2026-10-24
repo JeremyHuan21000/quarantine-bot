@@ -6,6 +6,10 @@ import sqlite3
 import discord
 from discord import app_commands
 
+UFC_EMOJI = '<:UFC:1563309644892348588>'
+HOLD_EMOJI = '<:HOLD:1563313747928547389>'
+OOOO_EMOJI = '<a:OOOO:1563312736115499181>'
+
 def install(bot, db_path, question_channel_id, announce_channel_id, quarantine_role_id,
             is_mod, is_quarantined, is_blacklisted, set_streak, set_freeze):
     def connect():
@@ -49,8 +53,8 @@ def install(bot, db_path, question_channel_id, announce_channel_id, quarantine_r
 
     def embed_for(event):
         fights = json.loads(event["fights"])
-        embed = discord.Embed(title="🥊 " + event["name"], description=(
-            "**UFC MAIN CARD CHALLENGE**\n"
+        embed = discord.Embed(title=event["name"], description=(
+            UFC_EMOJI + " **UFC MAIN CARD CHALLENGE**\n"
             "Predict every fight winner. **Perfect card = instant quarantine release!**\n\n"
             + "\n\n".join(
                 "**" + ("MAIN EVENT" if i == len(fights)-1 else "FIGHT " + str(i+1)) + "**\n"
@@ -58,7 +62,7 @@ def install(bot, db_path, question_channel_id, announce_channel_id, quarantine_r
                 for i, (a,b) in enumerate(fights)
             ) + "\n\n🔒 Picks lock <t:" + str(int(datetime.datetime.fromisoformat(event["lock_utc"]).timestamp())) + ":F>"
         ), color=discord.Color.red())
-        embed.set_footer(text="Use Make / Edit Picks below. All five selections auto-save; edits allowed until lock.")
+        embed.set_footer(text="Event #" + str(event["id"]) + " • Picks editable until main-card kickoff")
         return embed
 
     class FightSelect(discord.ui.Select):
@@ -86,7 +90,7 @@ def install(bot, db_path, question_channel_id, announce_channel_id, quarantine_r
 
         def summary(self):
             selected = sum(x is not None for x in self.choices)
-            return ("🥊 **Your UFC fight card** — " + str(selected) + "/" + str(len(self.fights)) +
+            return (UFC_EMOJI + " **Your UFC fight card** — " + str(selected) + "/" + str(len(self.fights)) +
                     " selected\nChoose one winner per fight. Your complete card saves automatically. "
                     "You may edit until the first main-card fight.")
 
@@ -122,7 +126,7 @@ def install(bot, db_path, question_channel_id, announce_channel_id, quarantine_r
             super().__init__(timeout=None)
             self.event_id = event_id
             button = discord.ui.Button(label="Make / Edit Picks", style=discord.ButtonStyle.primary,
-                                       emoji="🥊", custom_id="ufc:open:" + str(event_id))
+                                       emoji=discord.PartialEmoji(name="UFC", id=1563309644892348588), custom_id="ufc:open:" + str(event_id))
             button.callback = self.open_card
             self.add_item(button)
 
@@ -190,8 +194,8 @@ def install(bot, db_path, question_channel_id, announce_channel_id, quarantine_r
         await interaction.response.send_message("🥊 UFC event #" + str(event_id) +
             " posted in " + channel.mention + ". Lock: <t:" + str(int(lock.timestamp())) + ":F>", ephemeral=True)
 
-    @group.command(name="results", description="Grade a UFC card; 1=red corner, 2=blue corner")
-    @app_commands.describe(event_id="UFC event number", winners="Five winners, e.g. 1,2,1,1,2")
+    @group.command(name="results", description="Grade UFC fights: 1=red, 2=blue, X=void")
+    @app_commands.describe(event_id="UFC event number", winners="Five outcomes: 1=red, 2=blue, X=void; e.g. 1,2,X,1,2")
     async def results(interaction: discord.Interaction, event_id: int, winners: str):
         if not is_mod(interaction):
             await interaction.response.send_message("Mods only.", ephemeral=True)
@@ -204,11 +208,19 @@ def install(bot, db_path, question_channel_id, announce_channel_id, quarantine_r
             await interaction.response.send_message("Cannot grade before main-card kickoff.", ephemeral=True)
             return
         try:
-            answers = [int(x.strip()) - 1 for x in winners.split(",")]
-            if len(answers) != 5 or any(x not in (0,1) for x in answers):
+            tokens = [x.strip().upper() for x in winners.split(",")]
+            if len(tokens) != 5 or any(x not in ("1", "2", "X") for x in tokens):
                 raise ValueError
+            answers = [None if x == "X" else int(x) - 1 for x in tokens]
+            valid_fights = sum(x is not None for x in answers)
+            if valid_fights == 0:
+                await interaction.response.send_message(
+                    "All five fights are void. Cancel the event instead of grading it.",
+                    ephemeral=True,
+                )
+                return
         except ValueError:
-            await interaction.response.send_message("Enter five winners as 1 or 2, e.g. 1,2,1,1,2.", ephemeral=True)
+            await interaction.response.send_message("Enter five outcomes using 1, 2, or X (void), e.g. 1,2,X,1,2.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
         with connect() as conn:
@@ -222,17 +234,17 @@ def install(bot, db_path, question_channel_id, announce_channel_id, quarantine_r
             perfect_ids = []
             for row in rows:
                 picks = json.loads(row["picks"])
-                correct = sum(a==b for a,b in zip(picks,answers))
-                perfect = correct == len(answers)
+                correct = sum(b is not None and a == b for a,b in zip(picks,answers))
+                perfect = correct == valid_fights
                 conn.execute("UPDATE ufc_picks SET correct_count=?,perfect=? WHERE event_id=? AND user_id=?",
                              (correct,int(perfect),event_id,row["user_id"]))
                 conn.execute("""INSERT INTO ufc_stats(user_id,cards_entered,cards_graded,perfect_cards,
-                    fight_picks_correct,fight_picks_graded) VALUES(?,1,1,?,?,5)
+                    fight_picks_correct,fight_picks_graded) VALUES(?,1,1,?,?,?)
                     ON CONFLICT(user_id) DO UPDATE SET
                     cards_graded=cards_graded+1, perfect_cards=perfect_cards+excluded.perfect_cards,
                     fight_picks_correct=fight_picks_correct+excluded.fight_picks_correct,
-                    fight_picks_graded=fight_picks_graded+5""",
-                    (row["user_id"],int(perfect),correct))
+                    fight_picks_graded=fight_picks_graded+excluded.fight_picks_graded""",
+                    (row["user_id"],int(perfect),correct,valid_fights))
                 if perfect:
                     perfect_ids.append(row["user_id"])
         role = interaction.guild.get_role(quarantine_role_id)
@@ -255,11 +267,63 @@ def install(bot, db_path, question_channel_id, announce_channel_id, quarantine_r
                         blocked.append(member.mention)
         channel = interaction.guild.get_channel(announce_channel_id) or interaction.guild.get_channel(question_channel_id)
         if channel:
-            await channel.send("🥊 **" + event["name"] + " — Results**\n" +
-                "Perfect cards: " + (", ".join(winners_names) if winners_names else "None") +
-                "\n🔓 Released: " + (", ".join(released) if released else "None") +
-                ("\n⚠️ Not released (blacklisted or role error): " + ", ".join(blocked) if blocked else "") +
-                "\nCards graded: " + str(len(rows)))
+            fights = json.loads(event["fights"])
+            result_embed = discord.Embed(
+                title=event["name"] + " — Official Main Card Results",
+                description=UFC_EMOJI + " **MAIN CARD RESULTS**\n\n" +
+                    "\n\n".join(
+                        ("**MAIN EVENT**" if i == 4 else "**CO-MAIN EVENT**" if i == 3
+                         else "**Fight " + str(i+1) + "**") +
+                        ("\n⚪ **VOID** — " + fights[i][0] + " vs " + fights[i][1]
+                         if side is None else
+                         "\n🏆 **" + fights[i][side] + "** defeated " + fights[i][1-side])
+                        for i, side in enumerate(answers)
+                    ),
+                color=discord.Color.gold() if perfect_ids else discord.Color.red(),
+            )
+            result_embed.add_field(name="Cards graded", value=str(len(rows)))
+            result_embed.add_field(name="Fights counted", value=str(valid_fights) + "/5")
+            result_embed.add_field(name="Perfect cards", value=str(len(perfect_ids)))
+            result_embed.add_field(name="Released", value=str(len(released)))
+            if perfect_ids:
+                result_embed.add_field(
+                    name=OOOO_EMOJI + " PERFECT CARDS",
+                    value=", ".join(winners_names) if winners_names else
+                        str(len(perfect_ids)) + " perfect card(s)",
+                    inline=False,
+                )
+                result_embed.add_field(
+                    name="🔓 Instant releases",
+                    value=", ".join(released) if released else "No quarantined winners released",
+                    inline=False,
+                )
+            else:
+                result_embed.add_field(
+                    name=HOLD_EMOJI + " NO PERFECT CARDS",
+                    value="The quarantine continues.",
+                    inline=False,
+                )
+            ranked = sorted(
+                ((sum(b is not None and a == b for a, b in zip(json.loads(row["picks"]), answers)),
+                  row["user_id"]) for row in rows),
+                key=lambda item: (-item[0], item[1]),
+            )
+            if ranked:
+                result_embed.add_field(
+                    name="Closest predictions",
+                    value="\n".join(
+                        str(rank) + ". <@" + str(uid) + "> — **" + str(correct) + "/" + str(valid_fights) + "**"
+                        for rank, (correct, uid) in enumerate(ranked[:5], start=1)
+                    ),
+                    inline=False,
+                )
+            if blocked:
+                result_embed.add_field(
+                    name="⚠️ Not released",
+                    value=", ".join(blocked), inline=False,
+                )
+            result_embed.set_footer(text="UFC Event #" + str(event_id) + " • Official moderator-entered results")
+            await channel.send(embed=result_embed)
         await interaction.followup.send("Graded " + str(len(rows)) + " cards. Perfect: " +
                                         str(len(perfect_ids)) + ". Released: " + str(len(released)) + ".", ephemeral=True)
 
@@ -281,23 +345,6 @@ def install(bot, db_path, question_channel_id, announce_channel_id, quarantine_r
         await interaction.response.send_message(
             "\\n".join("#" + str(e["id"]) + " — " + e["name"] + " | Lock: " + e["lock_utc"]
                       for e in events) if events else "No active UFC challenges.", ephemeral=True)
-
-    @group.command(name="stats", description="Show UFC prediction performance")
-    async def stats(interaction: discord.Interaction, user: discord.Member = None):
-        target = user or interaction.user
-        with connect() as conn:
-            row = conn.execute("SELECT * FROM ufc_stats WHERE user_id=?", (target.id,)).fetchone()
-            entered = conn.execute("SELECT COUNT(*) FROM ufc_picks WHERE user_id=?", (target.id,)).fetchone()[0]
-        if row:
-            await interaction.response.send_message(
-                "🥊 **" + target.display_name + " — UFC Stats**\n"
-                "Cards entered: " + str(entered) + "\nCards graded: " + str(row["cards_graded"]) +
-                "\nPerfect cards: " + str(row["perfect_cards"]) +
-                "\nCorrect fight picks: " + str(row["fight_picks_correct"]) + "/" +
-                str(row["fight_picks_graded"]), ephemeral=False)
-        else:
-            await interaction.response.send_message("🥊 " + target.display_name +
-                " has entered " + str(entered) + " UFC cards (none graded yet).")
 
     bot.tree.add_command(group)
     return init, OpenCardView, open_events
