@@ -53,16 +53,34 @@ def install(bot, db_path, question_channel_id, announce_channel_id, quarantine_r
 
     def embed_for(event):
         fights = json.loads(event["fights"])
-        embed = discord.Embed(title=event["name"], description=(
-            UFC_EMOJI + " **UFC MAIN CARD CHALLENGE**\n"
-            "Predict every fight winner. **Perfect card = instant quarantine release!**\n\n"
-            + "\n\n".join(
-                "**" + ("MAIN EVENT" if i == len(fights)-1 else "FIGHT " + str(i+1)) + "**\n"
-                + "🔴 " + a + "  **VS**  🔵 " + b
-                for i, (a,b) in enumerate(fights)
-            ) + "\n\n🔒 Picks lock <t:" + str(int(datetime.datetime.fromisoformat(event["lock_utc"]).timestamp())) + ":F>"
-        ), color=discord.Color.red())
-        embed.set_footer(text="Event #" + str(event["id"]) + " • Picks editable until main-card start")
+        lock_ts = int(datetime.datetime.fromisoformat(event["lock_utc"]).timestamp())
+        embed = discord.Embed(
+            title="🥊 " + event["name"] + " | MAIN CARD CHALLENGE",
+            description=(
+                UFC_EMOJI + " **PICK ALL FIVE WINNERS**\n"
+                "A perfect card earns an **instant quarantine release**.\n"
+                "━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.red(),
+        )
+        for i, (red, blue) in enumerate(fights):
+            label = ("👑 MAIN EVENT" if i == 4 else
+                     "⭐ CO-MAIN EVENT" if i == 3 else
+                     "FIGHT " + str(i + 1))
+            embed.add_field(
+                name=label,
+                value="🔴 **" + red + "**\n"
+                      "**VS**\n"
+                      "🔵 **" + blue + "**",
+                inline=False,
+            )
+        embed.add_field(
+            name="🔒 PICKS CLOSE",
+            value="<t:" + str(lock_ts) + ":F> • <t:" + str(lock_ts) + ":R>\n"
+                  "You can change your picks until the first main-card fight begins.",
+            inline=False,
+        )
+        embed.set_footer(text="Event #" + str(event["id"]) + " • All five fights required")
         return embed
 
     class FightSelect(discord.ui.Select):
@@ -88,11 +106,22 @@ def install(bot, db_path, question_channel_id, announce_channel_id, quarantine_r
             for i, pair in enumerate(self.fights):
                 self.add_item(FightSelect(i, pair, self.choices[i]))
 
-        def summary(self):
+        def summary(self, saved=False):
             selected = sum(x is not None for x in self.choices)
-            return (UFC_EMOJI + " **Your UFC fight card** — " + str(selected) + "/" + str(len(self.fights)) +
-                    " selected\nChoose one winner per fight. Your complete card saves automatically. "
-                    "You may edit until the first main-card fight.")
+            lines = []
+            for i, pair in enumerate(self.fights):
+                side = self.choices[i]
+                label = "👑 MAIN EVENT" if i == 4 else "⭐ CO-MAIN" if i == 3 else "FIGHT " + str(i+1)
+                lines.append(("🔴 " if side == 0 else "🔵 " if side == 1 else "▫️ ") +
+                             "**" + label + "** — " + (pair[side] if side is not None else "Not selected"))
+            status = ("✅ **SAVED — " + str(selected) + "/5**" if saved else
+                      "📝 **" + str(selected) + "/5 SELECTED**" if selected < 5 else
+                      "✅ **5/5 SELECTED**")
+            return (UFC_EMOJI + " **YOUR UFC FIGHT CARD**\n" +
+                    status + "\n━━━━━━━━━━━━━━━━━━━━\n" +
+                    "\n".join(lines) + "\n━━━━━━━━━━━━━━━━━━━━\n" +
+                    ("Your full card saves automatically. " if not saved else "Your card is saved. ") +
+                    "Selections can be edited until the first main-card fight.")
 
         async def persist_selection(self, interaction):
             if interaction.user.id != self.user_id:
@@ -117,9 +146,7 @@ def install(bot, db_path, question_channel_id, announce_channel_id, quarantine_r
                     DO UPDATE SET picks=excluded.picks,submitted_utc=excluded.submitted_utc""",
                     (self.event_id,self.user_id,json.dumps(self.choices),
                      datetime.datetime.now(datetime.timezone.utc).isoformat()))
-            await interaction.response.edit_message(content="✅ **Card saved automatically!** You can edit it until start.\n" +
-                "\n".join("Fight " + str(i+1) + ": **" + self.fights[i][side] + "**"
-                          for i,side in enumerate(self.choices)), view=self)
+            await interaction.response.edit_message(content=self.summary(saved=True), view=self)
 
     class OpenCardView(discord.ui.View):
         def __init__(self, event_id):
