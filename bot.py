@@ -1337,7 +1337,7 @@ async def stats(interaction: discord.Interaction, user: discord.Member = None):
     embed.add_field(
         name="🥊 UFC main cards",
         value=(f"Perfect cards: **{ufc_row[1]}/{ufc_row[0]}** "
-               f"({ufc_row[1] / ufc_row[0] * 100:.1f}%)\\n"
+               f"({ufc_row[1] / ufc_row[0] * 100:.1f}%)\n"
                f"Correct fight picks: **{ufc_row[2]}/{ufc_row[3]}** "
                f"({ufc_row[2] / ufc_row[3] * 100:.1f}%)"
                if ufc_row and ufc_row[0] and ufc_row[3] else "No graded cards yet"),
